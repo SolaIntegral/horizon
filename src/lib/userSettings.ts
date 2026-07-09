@@ -6,10 +6,16 @@ export interface MainGoal {
   weeklyTargetMinutes: number
 }
 
+export interface ScopeGuard {
+  doNow: string[]
+  notNow: string[]
+}
+
 export interface UserSettings {
   mainGoal?: MainGoal
   weekdayCapacityMinutes?: number
   weekendCapacityMinutes?: number
+  scopeGuard?: ScopeGuard
 }
 
 export async function getUserSettings(userId: string): Promise<UserSettings | null> {
@@ -37,4 +43,8 @@ export async function setCapacitySettings(userId: string, weekdayCapacityMinutes
     { weekdayCapacityMinutes, weekendCapacityMinutes, updatedAt: serverTimestamp() },
     { merge: true },
   )
+}
+
+export async function setScopeGuard(userId: string, scopeGuard: ScopeGuard) {
+  await setDoc(doc(db, 'userSettings', userId), { scopeGuard, updatedAt: serverTimestamp() }, { merge: true })
 }

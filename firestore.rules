@@ -43,5 +43,15 @@ service cloud.firestore {
     match /userSettings/{userId} {
       allow read, write: if isSignedIn() && request.auth.uid == userId;
     }
+
+    match /features/{featureId} {
+      allow read, update, delete: if ownsDoc();
+      allow create: if ownsIncomingDoc();
+    }
+
+    match /ideas/{ideaId} {
+      allow read, update, delete: if ownsDoc();
+      allow create: if ownsIncomingDoc();
+    }
   }
 }

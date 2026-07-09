@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { useAuth } from '../lib/AuthContext'
 import { checkQuizAnswer, generateGrowthMemo, type GrowthMemo, type QuizCheckResult } from '../lib/ai'
 import { saveGrowthLog, subscribeGrowthLogs, type GrowthLog } from '../lib/growthLogs'
+import BuildPlanFAB from '../components/buildplan/BuildPlanFAB'
 
 function buildMarkdown(log: { reflectionText: string; aiMemo: GrowthMemo; quizAnswer?: string; createdAt?: Date }): string {
   const date = (log.createdAt ?? new Date()).toLocaleString()
@@ -114,6 +115,8 @@ export default function GrowthScreen() {
   }
 
   return (
+    <>
+    <BuildPlanFAB />
     <div className="flex-grow p-6 lg:p-10 overflow-y-auto pb-32 md:pb-10">
       <div className="max-w-6xl mx-auto space-y-10">
         <header>
@@ -257,5 +260,6 @@ export default function GrowthScreen() {
         </div>
       </div>
     </div>
+    </>
   )
 }
