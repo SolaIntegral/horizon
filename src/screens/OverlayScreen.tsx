@@ -30,8 +30,8 @@ export default function OverlayScreen() {
   const [phase, setPhase] = useState<Phase>('loading')
   const [action, setAction] = useState<Action | null>(null)
   const [sessionId, setSessionId] = useState<string | null>(null)
-  const [sessionStartedAt, setSessionStartedAt] = useState<Date | null>(null)
   const [elapsedSeconds, setElapsedSeconds] = useState(0)
+  const [paused, setPaused] = useState(false)
   const [notePrompt, setNotePrompt] = useState<NotePromptType>(null)
   const [noteText, setNoteText] = useState('')
   const [suggestions, setSuggestions] = useState<SuggestedAction[] | null>(null)
@@ -53,7 +53,6 @@ export default function OverlayScreen() {
       await startAction(actionId)
       const sid = await createWorkSession(user.uid, 'focus', taskId, actionId, a.estimatedMinutes)
       setSessionId(sid)
-      setSessionStartedAt(new Date())
       setPhase('focus')
     })()
   }, [user, taskId, actionId])
@@ -61,10 +60,16 @@ export default function OverlayScreen() {
   useEffect(() => {
     if (phase !== 'focus' && phase !== 'break') return
     setElapsedSeconds(0)
-    const id = setInterval(() => setElapsedSeconds((s) => s + 1), 1000)
-    return () => clearInterval(id)
+    setPaused(false)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sessionId])
+
+  useEffect(() => {
+    if (phase !== 'focus' && phase !== 'break') return
+    if (paused) return
+    const id = setInterval(() => setElapsedSeconds((s) => s + 1), 1000)
+    return () => clearInterval(id)
+  }, [phase, paused, sessionId])
 
   if (phase === 'loading') {
     return (
@@ -85,7 +90,7 @@ export default function OverlayScreen() {
     )
   }
 
-  const currentElapsedMinutes = () => (sessionStartedAt ? (Date.now() - sessionStartedAt.getTime()) / 60000 : 0)
+  const currentElapsedMinutes = () => elapsedSeconds / 60
 
   const startEditAction = () => {
     setEditTitle(action.title)
@@ -105,14 +110,12 @@ export default function OverlayScreen() {
     if (sessionId) await completeWorkSession(sessionId, currentElapsedMinutes())
     const sid = await createWorkSession(user.uid, 'break', taskId, actionId, BREAK_PLANNED_MINUTES)
     setSessionId(sid)
-    setSessionStartedAt(new Date())
     setPhase('break')
   }
 
   const startNewFocusSession = async () => {
     const sid = await createWorkSession(user.uid, 'focus', taskId, actionId, action.estimatedMinutes)
     setSessionId(sid)
-    setSessionStartedAt(new Date())
     setPhase('focus')
   }
 
@@ -192,19 +195,27 @@ export default function OverlayScreen() {
           <div className="p-10 flex flex-col gap-8">
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-2">
-                <div className="w-2.5 h-2.5 bg-primary rounded-full animate-pulse"></div>
-                <span className="text-[10px] font-bold uppercase tracking-widest text-on-surface-variant">Working</span>
+                <div className={`w-2.5 h-2.5 rounded-full ${paused ? 'bg-outline' : 'bg-primary animate-pulse'}`}></div>
+                <span className="text-[10px] font-bold uppercase tracking-widest text-on-surface-variant">
+                  {paused ? 'Paused' : 'Working'}
+                </span>
               </div>
               <button onClick={() => setNotePrompt('exit')} className="text-outline-variant hover:text-secondary transition-colors">
                 <span className="material-symbols-outlined">close</span>
               </button>
             </div>
-            <div className="text-center py-2">
-              <h2 className="text-7xl font-bold tracking-tight text-primary">{formatClock(remainingSeconds)}</h2>
+            <button onClick={() => setPaused((p) => !p)} className="text-center py-2 w-full group" title={paused ? '再開する' : '一時停止する'}>
+              <h2
+                className={`text-7xl font-bold tracking-tight transition-opacity group-hover:opacity-70 ${
+                  paused ? 'text-outline' : 'text-primary'
+                }`}
+              >
+                {formatClock(remainingSeconds)}
+              </h2>
               <p className="font-bold text-xs text-on-surface-variant mt-2 uppercase tracking-widest">
-                {remainingSeconds >= 0 ? 'left' : 'over'}
+                {paused ? 'タップで再開' : remainingSeconds >= 0 ? 'left (タップで一時停止)' : 'over (タップで一時停止)'}
               </p>
-            </div>
+            </button>
             <div className="neumorphic-sunken rounded-lg p-5 bg-surface">
               <div className="flex items-center justify-between mb-2">
                 <div className="flex items-center gap-2">
