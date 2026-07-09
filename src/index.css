@@ -1,0 +1,60 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --bg-color: #f8f9fa;
+  --shadow-light: #ffffff;
+  --shadow-dark: #e1e3e4;
+}
+
+body {
+  background-color: var(--bg-color);
+  font-family: 'Quicksand', sans-serif;
+  margin: 0;
+}
+
+/* Neumorphic Common */
+.neumorphic-raised {
+  box-shadow: 6px 6px 12px var(--shadow-dark), -6px -6px 12px var(--shadow-light);
+  transition: all 0.2s ease-in-out;
+}
+.neumorphic-raised:hover {
+  box-shadow: 8px 8px 16px var(--shadow-dark), -8px -8px 16px var(--shadow-light);
+}
+.neumorphic-sunken {
+  box-shadow: inset 4px 4px 10px var(--shadow-dark), inset -4px -4px 10px var(--shadow-light);
+}
+.btn-squish {
+  transition: all 0.15s ease;
+}
+.btn-squish:active {
+  transform: scale(0.97);
+  box-shadow: inset 3px 3px 6px var(--shadow-dark), inset -3px -3px 6px var(--shadow-light);
+}
+
+.pulse {
+  animation: pulse-ring 3s infinite ease-in-out;
+}
+@keyframes pulse-ring {
+  0% {
+    transform: scale(0.95);
+    opacity: 0.5;
+  }
+  50% {
+    transform: scale(1.05);
+    opacity: 0.8;
+  }
+  100% {
+    transform: scale(0.95);
+    opacity: 0.5;
+  }
+}
+
+.scrollbar-hide::-webkit-scrollbar {
+  display: none;
+}
+
+.risk-gauge {
+  background: conic-gradient(from 180deg, #bc000a 0%, #0041c8 100%);
+}
