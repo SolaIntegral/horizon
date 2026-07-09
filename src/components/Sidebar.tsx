@@ -38,7 +38,7 @@ export default function Sidebar() {
   return (
     <aside className="hidden md:flex flex-col h-screen w-64 bg-surface-container-low shadow-sm py-8 px-6 sticky top-0 border-r border-outline-variant/10">
       <div className="mb-10">
-        <h1 className="text-2xl font-bold text-primary tracking-tight">AI Coach</h1>
+        <h1 className="text-2xl font-bold text-primary tracking-tight">Horizon</h1>
         <p className="text-sm text-on-surface-variant mt-1 opacity-70">Ready for focus?</p>
       </div>
       <nav className="flex-grow space-y-2">

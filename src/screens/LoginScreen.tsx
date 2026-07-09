@@ -44,7 +44,7 @@ export default function LoginScreen() {
     <div className="flex min-h-screen items-center justify-center bg-background p-6">
       <div className="w-full max-w-sm neumorphic-raised rounded-xl bg-surface p-8 space-y-6">
         <div className="text-center">
-          <h1 className="text-2xl font-bold text-primary tracking-tight">AI Coach</h1>
+          <h1 className="text-2xl font-bold text-primary tracking-tight">Horizon</h1>
           <p className="text-sm text-on-surface-variant mt-1">ログインしてください</p>
         </div>
 
