@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { useAuth } from '../lib/AuthContext'
-import { subscribeActiveActions, subscribeDoneActions, skipAction, type Action } from '../lib/actions'
+import { subscribeActiveActions, subscribeDoneActions, skipAction, overwriteAction, type Action } from '../lib/actions'
 import { subscribeThisWeekTasks, type Task } from '../lib/tasks'
 import { subscribeUserSettings, setMainGoal, type UserSettings } from '../lib/userSettings'
 import { subscribeActiveWorkSession, type WorkSession } from '../lib/workSessions'
@@ -109,6 +109,23 @@ export default function TodayDashboard() {
 
   const handleSkip = async (action: Action) => {
     await skipAction(action.id, action.taskId)
+  }
+
+  const [editingActionId, setEditingActionId] = useState<string | null>(null)
+  const [editTitle, setEditTitle] = useState('')
+  const [editMinutes, setEditMinutes] = useState('')
+
+  const startEditAction = (action: Action) => {
+    setEditingActionId(action.id)
+    setEditTitle(action.title)
+    setEditMinutes(String(action.estimatedMinutes))
+  }
+
+  const saveEditAction = async (action: Action) => {
+    const minutes = parseInt(editMinutes, 10)
+    if (!editTitle.trim() || !minutes || minutes <= 0) return
+    await overwriteAction(action.id, editTitle.trim(), minutes)
+    setEditingActionId(null)
   }
 
   const handleSaveGoal = async () => {
@@ -286,38 +303,83 @@ export default function TodayDashboard() {
                     </span>
                     <span className="text-xs text-on-surface-variant">Focus: Deep Work</span>
                   </div>
-                  <div>
-                    <h3 className="text-2xl font-bold text-primary leading-tight">{action.taskTitle}</h3>
-                    <p className="text-lg text-on-surface-variant mt-2">Action: {action.title}</p>
-                  </div>
-                  <div className="flex items-center gap-4">
-                    <div className="flex items-center gap-2 font-bold bg-surface-container-highest px-4 py-2 rounded-full text-sm">
-                      <span className="material-symbols-outlined text-sm">timer</span> {action.estimatedMinutes}m
+                  {editingActionId === action.id ? (
+                    <div className="space-y-3 w-full">
+                      <input
+                        className="w-full p-2 text-lg font-bold neumorphic-sunken border-none rounded-lg bg-surface"
+                        value={editTitle}
+                        onChange={(e) => setEditTitle(e.target.value)}
+                        autoFocus
+                      />
+                      <div className="flex items-center gap-2">
+                        <input
+                          type="number"
+                          min={1}
+                          className="w-24 p-2 text-sm neumorphic-sunken border-none rounded-lg bg-surface"
+                          value={editMinutes}
+                          onChange={(e) => setEditMinutes(e.target.value)}
+                        />
+                        <span className="text-sm text-on-surface-variant">分</span>
+                      </div>
                     </div>
-                    <div className="flex items-center gap-2 font-bold bg-surface-container-highest px-4 py-2 rounded-full text-sm">
-                      <span className="material-symbols-outlined text-sm">psychology</span>
-                      {action.estimatedMinutes <= 15 ? 'Low Load' : action.estimatedMinutes <= 30 ? 'Med Load' : 'High Load'}
-                    </div>
-                  </div>
+                  ) : (
+                    <>
+                      <div>
+                        <h3 className="text-2xl font-bold text-primary leading-tight">{action.taskTitle}</h3>
+                        <p className="text-lg text-on-surface-variant mt-2">Action: {action.title}</p>
+                      </div>
+                      <div className="flex items-center gap-4">
+                        <div className="flex items-center gap-2 font-bold bg-surface-container-highest px-4 py-2 rounded-full text-sm">
+                          <span className="material-symbols-outlined text-sm">timer</span> {action.estimatedMinutes}m
+                        </div>
+                        <div className="flex items-center gap-2 font-bold bg-surface-container-highest px-4 py-2 rounded-full text-sm">
+                          <span className="material-symbols-outlined text-sm">psychology</span>
+                          {action.estimatedMinutes <= 15 ? 'Low Load' : action.estimatedMinutes <= 30 ? 'Med Load' : 'High Load'}
+                        </div>
+                      </div>
+                    </>
+                  )}
                 </div>
                 <div className="flex flex-col w-full md:w-auto gap-4">
-                  <Link
-                    to={`/overlay/${action.taskId}/${action.id}`}
-                    className="w-full md:w-48 py-4 neumorphic-raised bg-primary text-white text-xl font-bold rounded-full hover:scale-105 active:scale-95 transition-all text-center"
-                  >
-                    Start
-                  </Link>
-                  <div className="flex gap-4">
-                    <button className="flex-1 py-2 neumorphic-raised rounded-full text-sm hover:bg-surface-container">
-                      Make Smaller
-                    </button>
-                    <button
-                      onClick={() => handleSkip(action)}
-                      className="flex-1 py-2 neumorphic-raised rounded-full text-sm hover:bg-surface-container"
-                    >
-                      Skip
-                    </button>
-                  </div>
+                  {editingActionId === action.id ? (
+                    <div className="flex gap-4">
+                      <button
+                        onClick={() => setEditingActionId(null)}
+                        className="flex-1 py-2 neumorphic-raised rounded-full text-sm hover:bg-surface-container"
+                      >
+                        Cancel
+                      </button>
+                      <button
+                        onClick={() => saveEditAction(action)}
+                        className="flex-1 py-2 neumorphic-raised bg-primary text-white rounded-full text-sm font-bold"
+                      >
+                        Save
+                      </button>
+                    </div>
+                  ) : (
+                    <>
+                      <Link
+                        to={`/overlay/${action.taskId}/${action.id}`}
+                        className="w-full md:w-48 py-4 neumorphic-raised bg-primary text-white text-xl font-bold rounded-full hover:scale-105 active:scale-95 transition-all text-center"
+                      >
+                        Start
+                      </Link>
+                      <div className="flex gap-4">
+                        <button
+                          onClick={() => startEditAction(action)}
+                          className="flex-1 py-2 neumorphic-raised rounded-full text-sm hover:bg-surface-container"
+                        >
+                          Edit
+                        </button>
+                        <button
+                          onClick={() => handleSkip(action)}
+                          className="flex-1 py-2 neumorphic-raised rounded-full text-sm hover:bg-surface-container"
+                        >
+                          Skip
+                        </button>
+                      </div>
+                    </>
+                  )}
                 </div>
               </div>
             </div>

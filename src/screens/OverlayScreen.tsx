@@ -35,6 +35,9 @@ export default function OverlayScreen() {
   const [notePrompt, setNotePrompt] = useState<NotePromptType>(null)
   const [noteText, setNoteText] = useState('')
   const [suggestions, setSuggestions] = useState<SuggestedAction[] | null>(null)
+  const [editingAction, setEditingAction] = useState(false)
+  const [editTitle, setEditTitle] = useState('')
+  const [editMinutes, setEditMinutes] = useState('')
   const initRef = useRef(false)
 
   useEffect(() => {
@@ -83,6 +86,20 @@ export default function OverlayScreen() {
   }
 
   const currentElapsedMinutes = () => (sessionStartedAt ? (Date.now() - sessionStartedAt.getTime()) / 60000 : 0)
+
+  const startEditAction = () => {
+    setEditTitle(action.title)
+    setEditMinutes(String(action.estimatedMinutes))
+    setEditingAction(true)
+  }
+
+  const saveEditAction = async () => {
+    const minutes = parseInt(editMinutes, 10)
+    if (!editTitle.trim() || !minutes || minutes <= 0) return
+    await overwriteAction(actionId, editTitle.trim(), minutes)
+    setAction({ ...action, title: editTitle.trim(), estimatedMinutes: minutes })
+    setEditingAction(false)
+  }
 
   const performTakeBreak = async () => {
     if (sessionId) await completeWorkSession(sessionId, currentElapsedMinutes())
@@ -189,11 +206,46 @@ export default function OverlayScreen() {
               </p>
             </div>
             <div className="neumorphic-sunken rounded-lg p-5 bg-surface">
-              <div className="flex items-center gap-2 mb-2">
-                <span className="material-symbols-outlined text-sm text-primary">bolt</span>
-                <span className="text-[10px] font-bold uppercase text-outline">Next 15 min</span>
+              <div className="flex items-center justify-between mb-2">
+                <div className="flex items-center gap-2">
+                  <span className="material-symbols-outlined text-sm text-primary">bolt</span>
+                  <span className="text-[10px] font-bold uppercase text-outline">Next 15 min</span>
+                </div>
+                {!editingAction && (
+                  <button onClick={startEditAction} className="text-outline hover:text-primary transition-colors" title="編集">
+                    <span className="material-symbols-outlined text-base">edit</span>
+                  </button>
+                )}
               </div>
-              <p className="text-sm font-bold leading-relaxed text-on-surface">{action.title}</p>
+              {editingAction ? (
+                <div className="space-y-2">
+                  <input
+                    className="w-full p-2 text-sm font-bold neumorphic-raised border-none rounded-lg bg-surface"
+                    value={editTitle}
+                    onChange={(e) => setEditTitle(e.target.value)}
+                    autoFocus
+                  />
+                  <div className="flex items-center gap-2">
+                    <input
+                      type="number"
+                      min={1}
+                      className="w-20 p-2 text-sm neumorphic-raised border-none rounded-lg bg-surface"
+                      value={editMinutes}
+                      onChange={(e) => setEditMinutes(e.target.value)}
+                    />
+                    <span className="text-xs text-on-surface-variant">分</span>
+                    <div className="flex-1"></div>
+                    <button onClick={() => setEditingAction(false)} className="px-3 py-1.5 rounded-full text-xs font-bold text-on-surface-variant">
+                      Cancel
+                    </button>
+                    <button onClick={saveEditAction} className="px-3 py-1.5 rounded-full text-xs font-bold bg-primary text-white">
+                      Save
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                <p className="text-sm font-bold leading-relaxed text-on-surface">{action.title}</p>
+              )}
             </div>
             <div className="flex gap-3">
               <button
@@ -230,8 +282,43 @@ export default function OverlayScreen() {
               </p>
             </div>
             <div className="neumorphic-sunken rounded-lg p-5 border-l-4 border-secondary/30 bg-surface">
-              <p className="text-[10px] font-bold uppercase tracking-wider text-secondary mb-1">Returning Step</p>
-              <p className="text-sm font-bold leading-relaxed text-on-surface">{action.title}</p>
+              <div className="flex items-center justify-between mb-1">
+                <p className="text-[10px] font-bold uppercase tracking-wider text-secondary">Returning Step</p>
+                {!editingAction && (
+                  <button onClick={startEditAction} className="text-outline hover:text-secondary transition-colors" title="編集">
+                    <span className="material-symbols-outlined text-base">edit</span>
+                  </button>
+                )}
+              </div>
+              {editingAction ? (
+                <div className="space-y-2">
+                  <input
+                    className="w-full p-2 text-sm font-bold neumorphic-raised border-none rounded-lg bg-surface"
+                    value={editTitle}
+                    onChange={(e) => setEditTitle(e.target.value)}
+                    autoFocus
+                  />
+                  <div className="flex items-center gap-2">
+                    <input
+                      type="number"
+                      min={1}
+                      className="w-20 p-2 text-sm neumorphic-raised border-none rounded-lg bg-surface"
+                      value={editMinutes}
+                      onChange={(e) => setEditMinutes(e.target.value)}
+                    />
+                    <span className="text-xs text-on-surface-variant">分</span>
+                    <div className="flex-1"></div>
+                    <button onClick={() => setEditingAction(false)} className="px-3 py-1.5 rounded-full text-xs font-bold text-on-surface-variant">
+                      Cancel
+                    </button>
+                    <button onClick={saveEditAction} className="px-3 py-1.5 rounded-full text-xs font-bold bg-secondary text-white">
+                      Save
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                <p className="text-sm font-bold leading-relaxed text-on-surface">{action.title}</p>
+              )}
             </div>
             <button
               onClick={handleBackToWork}
