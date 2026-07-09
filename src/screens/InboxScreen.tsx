@@ -160,9 +160,14 @@ export default function InboxScreen() {
 
   const handleAddToInbox = async () => {
     if (!user || !text.trim()) return
+    const lines = text
+      .split('\n')
+      .map((line) => line.trim())
+      .filter((line) => line.length > 0)
+    if (lines.length === 0) return
     setSubmitting(true)
     try {
-      await createInboxTask(user.uid, text.trim())
+      await Promise.all(lines.map((line) => createInboxTask(user.uid, line)))
       setText('')
     } finally {
       setSubmitting(false)
@@ -180,7 +185,7 @@ export default function InboxScreen() {
           <div className="w-full relative">
             <textarea
               className="w-full h-40 p-6 font-medium text-lg bg-background neumorphic-sunken border-none rounded-xl focus:ring-2 focus:ring-primary/20 placeholder-outline/50 resize-none"
-              placeholder="どんなことでもそのまま書く (例：研究の背景スライド直し)"
+              placeholder="どんなことでもそのまま書く。1行につき1タスクになります (例：研究の背景スライド直し)"
               value={text}
               onChange={(e) => setText(e.target.value)}
             ></textarea>
