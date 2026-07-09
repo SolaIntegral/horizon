@@ -20,7 +20,17 @@ service cloud.firestore {
       allow create: if ownsIncomingDoc();
     }
 
+    match /actions/{actionId} {
+      allow read, update, delete: if ownsDoc();
+      allow create: if ownsIncomingDoc();
+    }
+
     match /workSessions/{sessionId} {
+      allow read, update, delete: if ownsDoc();
+      allow create: if ownsIncomingDoc();
+    }
+
+    match /progressNotes/{noteId} {
       allow read, update, delete: if ownsDoc();
       allow create: if ownsIncomingDoc();
     }
@@ -28,6 +38,10 @@ service cloud.firestore {
     match /growthLogs/{logId} {
       allow read, update, delete: if ownsDoc();
       allow create: if ownsIncomingDoc();
+    }
+
+    match /userSettings/{userId} {
+      allow read, write: if isSignedIn() && request.auth.uid == userId;
     }
   }
 }

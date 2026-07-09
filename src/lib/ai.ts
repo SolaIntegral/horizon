@@ -116,3 +116,67 @@ Judge if the answer is substantially correct (minor wording or syntax difference
   const result = await quizCheckModel.generateContent(prompt)
   return JSON.parse(result.response.text()) as QuizCheckResult
 }
+
+export interface StructuredNote {
+  doneSummary?: string
+  nextSummary?: string
+  blockerSummary?: string
+  ideaSummary?: string
+}
+
+export interface SuggestedActionAI {
+  title: string
+  estimatedMinutes: number
+  reason?: string
+  recommendationType: 'overwrite_current' | 'add_new'
+}
+
+export interface ProcessedNote {
+  structured: StructuredNote
+  suggestedActions: SuggestedActionAI[]
+}
+
+const noteModel = getGenerativeModel(ai, {
+  model: MODEL_ID,
+  generationConfig: {
+    responseMimeType: 'application/json',
+    responseSchema: Schema.object({
+      properties: {
+        structured: Schema.object({
+          properties: {
+            doneSummary: Schema.string(),
+            nextSummary: Schema.string(),
+            blockerSummary: Schema.string(),
+            ideaSummary: Schema.string(),
+          },
+          optionalProperties: ['doneSummary', 'nextSummary', 'blockerSummary', 'ideaSummary'],
+        }),
+        suggestedActions: Schema.array({
+          items: Schema.object({
+            properties: {
+              title: Schema.string(),
+              estimatedMinutes: Schema.number(),
+              reason: Schema.string(),
+              recommendationType: Schema.enumString({ enum: ['overwrite_current', 'add_new'] }),
+            },
+            optionalProperties: ['reason'],
+          }),
+        }),
+      },
+    }),
+  },
+})
+
+export async function processProgressNote(rawNote: string, currentActionTitle: string): Promise<ProcessedNote> {
+  const prompt = `You are a focus coach analyzing a user's short free-text progress note written during or after a work session (may be in Japanese or English).
+
+Current Next-15 Action: "${currentActionTitle}"
+Progress note: "${rawNote}"
+
+Respond with:
+- structured: split the note into doneSummary (what was accomplished, if any), nextSummary (what to do next, if mentioned), blockerSummary (what's blocking progress, if mentioned), ideaSummary (any idea/insight, if mentioned). Omit fields the note doesn't address. Same language as the note.
+- suggestedActions: 0-3 concrete next 15-minute actions implied by the note, same language as the note. For each, set recommendationType to "overwrite_current" if it's simply a more concrete version of the current action (same goal, natural next step replacing it), or "add_new" if it's a separate/derived task that should exist alongside the current action. Include a short one-sentence reason for each.`
+
+  const result = await noteModel.generateContent(prompt)
+  return JSON.parse(result.response.text()) as ProcessedNote
+}

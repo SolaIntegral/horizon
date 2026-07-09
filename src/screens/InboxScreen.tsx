@@ -1,5 +1,8 @@
-import { useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
+import { useAuth } from '../lib/AuthContext'
+import { createInboxTask, deleteTask, subscribeInboxTasks, updateTaskText, type Task } from '../lib/tasks'
+import { formatRelativeTime } from '../lib/dateUtils'
 
 type CaptureTab = 'text' | 'voice' | 'quickadd'
 
@@ -9,11 +12,116 @@ const captureTabs: { id: CaptureTab; label: string }[] = [
   { id: 'quickadd', label: 'Quick Add' },
 ]
 
+function CapturedItem({ task }: { task: Task }) {
+  const [menuOpen, setMenuOpen] = useState(false)
+  const [editing, setEditing] = useState(false)
+  const [editText, setEditText] = useState(task.originalInput)
+
+  const createdAt = task.createdAt?.toDate?.() ?? new Date()
+
+  const handleSaveEdit = async () => {
+    if (editText.trim()) {
+      await updateTaskText(task.id, editText.trim())
+    }
+    setEditing(false)
+  }
+
+  const handleDelete = async () => {
+    setMenuOpen(false)
+    await deleteTask(task.id)
+  }
+
+  if (editing) {
+    return (
+      <div className="neumorphic-raised bg-surface rounded-lg p-5 space-y-3">
+        <textarea
+          className="w-full p-3 text-sm neumorphic-sunken border-none rounded-lg focus:ring-2 focus:ring-primary/20 bg-surface resize-none"
+          rows={3}
+          value={editText}
+          onChange={(e) => setEditText(e.target.value)}
+        />
+        <div className="flex gap-2 justify-end">
+          <button
+            onClick={() => {
+              setEditText(task.originalInput)
+              setEditing(false)
+            }}
+            className="px-4 py-2 rounded-full text-sm font-bold text-on-surface-variant hover:bg-surface-container"
+          >
+            Cancel
+          </button>
+          <button onClick={handleSaveEdit} className="px-4 py-2 rounded-full text-sm font-bold bg-primary text-white">
+            Save
+          </button>
+        </div>
+      </div>
+    )
+  }
+
+  return (
+    <div className="neumorphic-raised bg-surface rounded-lg p-5 flex items-center gap-4 border-l-4 border-secondary">
+      <div className="w-12 h-12 bg-surface-container-highest rounded-full flex items-center justify-center neumorphic-sunken">
+        <span className="material-symbols-outlined text-secondary animate-pulse">hourglass_top</span>
+      </div>
+      <div className="flex-1 min-w-0">
+        <p className="text-lg font-semibold text-on-surface truncate">{task.originalInput}</p>
+        <div className="flex items-center gap-2 mt-1">
+          <span className="text-xs text-on-surface-variant">{formatRelativeTime(createdAt)}</span>
+          <span className="px-2 py-0.5 bg-secondary-container text-on-secondary-container rounded-full text-[10px] font-bold">
+            Waiting for AI Diagnosis
+          </span>
+        </div>
+      </div>
+      <Link
+        to={`/diagnose/${task.id}`}
+        className="neumorphic-raised bg-primary-container text-on-primary px-4 py-2 rounded-lg text-sm font-bold flex items-center gap-2"
+      >
+        <span className="material-symbols-outlined text-lg">psychology</span>
+        <span>Diagnose</span>
+      </Link>
+      <div className="relative">
+        {menuOpen && <div className="fixed inset-0 z-10" onClick={() => setMenuOpen(false)} />}
+        <button onClick={() => setMenuOpen((v) => !v)} className="relative z-20 neumorphic-raised p-2 rounded-full">
+          <span className="material-symbols-outlined">more_vert</span>
+        </button>
+        {menuOpen && (
+          <div className="absolute right-0 top-full mt-2 w-32 neumorphic-raised bg-surface rounded-xl p-2 z-20">
+            <button
+              onClick={() => {
+                setMenuOpen(false)
+                setEditing(true)
+              }}
+              className="w-full text-left px-3 py-2 rounded-lg text-sm font-semibold hover:bg-surface-container-high"
+            >
+              編集
+            </button>
+            <button
+              onClick={handleDelete}
+              className="w-full text-left px-3 py-2 rounded-lg text-sm font-semibold text-secondary hover:bg-surface-container-high"
+            >
+              削除
+            </button>
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
+
 export default function InboxScreen() {
+  const { user } = useAuth()
   const [text, setText] = useState('')
   const [activeTab, setActiveTab] = useState<CaptureTab>('text')
   const [isRecording, setIsRecording] = useState(false)
   const recognitionRef = useRef<any>(null)
+  const [inboxTasks, setInboxTasks] = useState<Task[]>([])
+  const [submitting, setSubmitting] = useState(false)
+
+  useEffect(() => {
+    if (!user) return
+    const unsubscribe = subscribeInboxTasks(user.uid, setInboxTasks)
+    return unsubscribe
+  }, [user])
 
   const handleMicClick = () => {
     if (isRecording) {
@@ -47,6 +155,17 @@ export default function InboxScreen() {
       }
     } catch {
       alert('クリップボードの読み取りに失敗しました。ブラウザの権限設定を確認してください。')
+    }
+  }
+
+  const handleAddToInbox = async () => {
+    if (!user || !text.trim()) return
+    setSubmitting(true)
+    try {
+      await createInboxTask(user.uid, text.trim())
+      setText('')
+    } finally {
+      setSubmitting(false)
     }
   }
 
@@ -100,8 +219,9 @@ export default function InboxScreen() {
           </div>
 
           <button
-            className="w-full max-w-sm neumorphic-raised bg-primary text-on-primary rounded-full py-4 px-8 text-xl font-bold flex items-center justify-center gap-3 hover:bg-primary-container transition-colors"
-            onClick={() => setText('')}
+            className="w-full max-w-sm neumorphic-raised bg-primary text-on-primary rounded-full py-4 px-8 text-xl font-bold flex items-center justify-center gap-3 hover:bg-primary-container transition-colors disabled:opacity-50"
+            onClick={handleAddToInbox}
+            disabled={submitting || !text.trim()}
           >
             <span className="material-symbols-outlined">add_circle</span>
             <span>Add to Inbox</span>
@@ -111,40 +231,12 @@ export default function InboxScreen() {
         <section className="space-y-6">
           <h3 className="text-2xl font-bold text-primary border-b border-outline-variant/30 pb-2">Captured Today</h3>
           <div className="space-y-4">
-            <div className="neumorphic-raised bg-surface rounded-lg p-5 flex items-center gap-4 border-l-4 border-secondary">
-              <div className="w-12 h-12 bg-surface-container-highest rounded-full flex items-center justify-center neumorphic-sunken">
-                <span className="material-symbols-outlined text-secondary animate-pulse">hourglass_top</span>
-              </div>
-              <div className="flex-1">
-                <p className="text-lg font-semibold text-on-surface">英語の論読のサマリーを書く</p>
-                <div className="flex items-center gap-2 mt-1">
-                  <span className="text-xs text-on-surface-variant">2m ago</span>
-                  <span className="px-2 py-0.5 bg-secondary-container text-on-secondary-container rounded-full text-[10px] font-bold">
-                    Waiting for AI Diagnosis
-                  </span>
-                </div>
-              </div>
-              <button className="neumorphic-raised p-2 rounded-full">
-                <span className="material-symbols-outlined">more_vert</span>
-              </button>
-            </div>
-
-            <div className="neumorphic-raised bg-surface rounded-lg p-5 flex items-center gap-4">
-              <div className="w-12 h-12 bg-surface-container-highest rounded-full flex items-center justify-center neumorphic-raised">
-                <span className="material-symbols-outlined text-primary">description</span>
-              </div>
-              <div className="flex-1">
-                <p className="text-lg font-semibold text-on-surface">GitHubのPRをマージする</p>
-                <span className="text-xs text-on-surface-variant">15m ago</span>
-              </div>
-              <Link
-                to="/diagnose"
-                className="neumorphic-raised bg-primary-container text-on-primary px-4 py-2 rounded-lg text-sm font-bold flex items-center gap-2"
-              >
-                <span className="material-symbols-outlined text-lg">psychology</span>
-                <span>Diagnose</span>
-              </Link>
-            </div>
+            {inboxTasks.length === 0 && (
+              <p className="text-sm text-on-surface-variant text-center py-8">まだ何も入っていません。</p>
+            )}
+            {inboxTasks.map((task) => (
+              <CapturedItem key={task.id} task={task} />
+            ))}
           </div>
         </section>
       </div>

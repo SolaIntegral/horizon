@@ -1,7 +1,45 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
+import { useAuth } from '../lib/AuthContext'
 import { checkQuizAnswer, generateGrowthMemo, type GrowthMemo, type QuizCheckResult } from '../lib/ai'
+import { saveGrowthLog, subscribeGrowthLogs, type GrowthLog } from '../lib/growthLogs'
+
+function buildMarkdown(log: { reflectionText: string; aiMemo: GrowthMemo; quizAnswer?: string; createdAt?: Date }): string {
+  const date = (log.createdAt ?? new Date()).toLocaleString()
+  const lines = [
+    `# Growth Log - ${date}`,
+    '',
+    '## Reflection',
+    log.reflectionText,
+    '',
+    '## AI Summary',
+    log.aiMemo.summary,
+    '',
+    ...log.aiMemo.bulletPoints.map((b) => `- ${b}`),
+    '',
+    '## Quiz',
+    `Q. ${log.aiMemo.quizQuestion}`,
+    log.quizAnswer ? `A. ${log.quizAnswer}` : '',
+    '',
+    "## Tomorrow's Challenge",
+    log.aiMemo.tomorrowChallenge,
+  ]
+  return lines.join('\n')
+}
+
+function downloadMarkdown(filename: string, content: string) {
+  const blob = new Blob([content], { type: 'text/markdown' })
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = filename
+  document.body.appendChild(a)
+  a.click()
+  document.body.removeChild(a)
+  URL.revokeObjectURL(url)
+}
 
 export default function GrowthScreen() {
+  const { user } = useAuth()
   const [reflection, setReflection] = useState('')
   const [memo, setMemo] = useState<GrowthMemo | null>(null)
   const [loading, setLoading] = useState(false)
@@ -9,6 +47,14 @@ export default function GrowthScreen() {
   const [quizAnswer, setQuizAnswer] = useState('')
   const [quizResult, setQuizResult] = useState<QuizCheckResult | null>(null)
   const [checking, setChecking] = useState(false)
+  const [saving, setSaving] = useState(false)
+  const [saved, setSaved] = useState(false)
+  const [logs, setLogs] = useState<GrowthLog[]>([])
+
+  useEffect(() => {
+    if (!user) return
+    return subscribeGrowthLogs(user.uid, setLogs)
+  }, [user])
 
   const handleGenerate = async () => {
     if (!reflection.trim()) return
@@ -19,6 +65,7 @@ export default function GrowthScreen() {
       setMemo(result)
       setQuizAnswer('')
       setQuizResult(null)
+      setSaved(false)
     } catch {
       setError('Memo generation failed. Please try again.')
     } finally {
@@ -39,6 +86,33 @@ export default function GrowthScreen() {
     }
   }
 
+  const handleSaveLog = async () => {
+    if (!user || !memo || !reflection.trim()) return
+    setSaving(true)
+    try {
+      await saveGrowthLog(user.uid, reflection, memo, quizAnswer || undefined, quizResult?.correct)
+      setSaved(true)
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const handleExportMarkdown = () => {
+    if (!memo) return
+    const markdown = buildMarkdown({ reflectionText: reflection, aiMemo: memo, quizAnswer })
+    downloadMarkdown(`growth-log-${new Date().toISOString().slice(0, 10)}.md`, markdown)
+  }
+
+  const handleExportHistoryLog = (log: GrowthLog) => {
+    const markdown = buildMarkdown({
+      reflectionText: log.reflectionText,
+      aiMemo: log.aiMemo,
+      quizAnswer: log.quizAnswer,
+      createdAt: log.createdAt?.toDate(),
+    })
+    downloadMarkdown(`growth-log-${log.id}.md`, markdown)
+  }
+
   return (
     <div className="flex-grow p-6 lg:p-10 overflow-y-auto pb-32 md:pb-10">
       <div className="max-w-6xl mx-auto space-y-10">
@@ -56,7 +130,10 @@ export default function GrowthScreen() {
                   className="w-full bg-transparent border-none focus:ring-0 min-h-[150px] text-lg resize-none placeholder:opacity-30"
                   placeholder="Write your reflections here..."
                   value={reflection}
-                  onChange={(e) => setReflection(e.target.value)}
+                  onChange={(e) => {
+                    setReflection(e.target.value)
+                    setSaved(false)
+                  }}
                 ></textarea>
               </div>
               <div className="flex items-center justify-end gap-4">
@@ -119,6 +196,36 @@ export default function GrowthScreen() {
                 )}
               </div>
             </section>
+
+            {logs.length > 0 && (
+              <section className="space-y-4">
+                <h3 className="text-xl font-bold text-primary border-b border-outline-variant/30 pb-2">
+                  Previous Reflections
+                </h3>
+                <div className="space-y-4">
+                  {logs.map((log) => (
+                    <div key={log.id} className="neumorphic-raised bg-surface rounded-lg p-5">
+                      <div className="flex items-start justify-between gap-4">
+                        <div className="min-w-0">
+                          <p className="text-xs text-on-surface-variant font-bold">
+                            {log.createdAt?.toDate().toLocaleString() ?? ''}
+                          </p>
+                          <p className="text-sm text-on-surface mt-1 line-clamp-2">{log.reflectionText}</p>
+                          <p className="text-sm text-on-surface-variant mt-2">{log.aiMemo.summary}</p>
+                        </div>
+                        <button
+                          onClick={() => handleExportHistoryLog(log)}
+                          className="neumorphic-raised p-2 rounded-full flex-shrink-0"
+                          title="Export Markdown"
+                        >
+                          <span className="material-symbols-outlined text-lg">download</span>
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </section>
+            )}
           </div>
 
           <div className="lg:col-span-4 space-y-8">
@@ -130,10 +237,19 @@ export default function GrowthScreen() {
             </section>
 
             <div className="space-y-4">
-              <button className="w-full py-4 rounded-xl neumorphic-raised bg-secondary text-on-secondary font-bold flex items-center justify-center gap-3">
-                <span className="material-symbols-outlined">save</span> Save Log
+              <button
+                onClick={handleSaveLog}
+                disabled={!memo || saving}
+                className="w-full py-4 rounded-xl neumorphic-raised bg-secondary text-on-secondary font-bold flex items-center justify-center gap-3 disabled:opacity-50"
+              >
+                <span className="material-symbols-outlined">save</span>
+                {saving ? 'Saving…' : saved ? 'Saved ✓' : 'Save Log'}
               </button>
-              <button className="w-full py-4 rounded-xl neumorphic-raised bg-surface text-on-surface-variant font-bold flex items-center justify-center gap-3">
+              <button
+                onClick={handleExportMarkdown}
+                disabled={!memo}
+                className="w-full py-4 rounded-xl neumorphic-raised bg-surface text-on-surface-variant font-bold flex items-center justify-center gap-3 disabled:opacity-50"
+              >
                 <span className="material-symbols-outlined">description</span> Export Markdown
               </button>
             </div>

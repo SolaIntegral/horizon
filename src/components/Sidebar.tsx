@@ -1,4 +1,8 @@
-import { Link, useLocation } from 'react-router-dom'
+import { useState } from 'react'
+import { Link, useLocation, useNavigate } from 'react-router-dom'
+import { signOut } from 'firebase/auth'
+import { auth } from '../lib/firebase'
+import { useAuth } from '../lib/AuthContext'
 
 const navItems = [
   { path: '/', icon: 'today', label: 'Today' },
@@ -9,8 +13,27 @@ const navItems = [
   { path: '/growth', icon: 'auto_stories', label: 'Growth' },
 ]
 
+function getInitials(label: string) {
+  const parts = label.trim().split(/\s+/)
+  return parts
+    .slice(0, 2)
+    .map((p) => p[0]?.toUpperCase())
+    .join('')
+}
+
 export default function Sidebar() {
   const location = useLocation()
+  const navigate = useNavigate()
+  const { user } = useAuth()
+  const [menuOpen, setMenuOpen] = useState(false)
+
+  const displayName = user?.displayName || user?.email || 'User'
+
+  const handleLogout = async () => {
+    setMenuOpen(false)
+    await signOut(auth)
+    navigate('/login')
+  }
 
   return (
     <aside className="hidden md:flex flex-col h-screen w-64 bg-surface-container-low shadow-sm py-8 px-6 sticky top-0 border-r border-outline-variant/10">
@@ -48,16 +71,34 @@ export default function Sidebar() {
           <span className="material-symbols-outlined">add</span>
           <span>Quick Dump</span>
         </Link>
-        <div className="flex items-center gap-3 p-2 bg-surface-container-high/50 rounded-full">
-          <img
-            className="w-10 h-10 rounded-full object-cover shadow-inner"
-            src="https://lh3.googleusercontent.com/aida-public/AB6AXuACNHPsiLUUdJfeHNcBRWmhXsmACr3Ku-7sUGFD9B8VHmwTzxjDAGAqE7HHoYysJIsOudzYxAmgOezqEeU3nQmwbvsBMPXpVp2r-MtXpng4JjvhWWQ9WxNDJ-UJJpA4azhhZJaoZw5nY9IpxXIWupEfB05knWecl0Ni39NFjuONpMRr-TTJAe32zn69u4J91TXamUbzYkD_BkwRNkvlAFjxdBUzw6wUtINWNnR9VRf_0cjUXLwNP3FRvb-Dzox34XhiYNBeAwUWk4xU"
-            alt="avatar"
-          />
-          <div className="flex flex-col">
-            <span className="text-sm font-bold truncate w-24">Alex Rivera</span>
-            <span className="text-[10px] uppercase tracking-widest opacity-50 font-bold">Pro Account</span>
-          </div>
+
+        <div className="relative">
+          {menuOpen && <div className="fixed inset-0 z-10" onClick={() => setMenuOpen(false)} />}
+
+          {menuOpen && (
+            <div className="absolute bottom-full mb-2 left-0 w-full neumorphic-raised bg-surface rounded-xl p-2 z-20">
+              <button
+                onClick={handleLogout}
+                className="w-full text-left px-3 py-2 rounded-lg text-sm font-semibold text-secondary hover:bg-surface-container-high transition-colors flex items-center gap-2"
+              >
+                <span className="material-symbols-outlined text-lg">logout</span>
+                Log out
+              </button>
+            </div>
+          )}
+
+          <button
+            onClick={() => setMenuOpen((v) => !v)}
+            className="relative z-20 w-full flex items-center gap-3 p-2 bg-surface-container-high/50 rounded-full hover:bg-surface-container-high transition-colors"
+          >
+            <div className="w-10 h-10 rounded-full bg-primary text-white flex items-center justify-center font-bold text-sm flex-shrink-0">
+              {getInitials(displayName)}
+            </div>
+            <div className="flex flex-col items-start overflow-hidden">
+              <span className="text-sm font-bold truncate w-28">{displayName}</span>
+              <span className="text-[10px] uppercase tracking-widest opacity-50 font-bold">Account</span>
+            </div>
+          </button>
         </div>
       </div>
     </aside>

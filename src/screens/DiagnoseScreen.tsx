@@ -1,5 +1,9 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
+import { useNavigate, useParams } from 'react-router-dom'
+import { useAuth } from '../lib/AuthContext'
 import { diagnoseTask, type TaskDiagnosis } from '../lib/ai'
+import { createAction } from '../lib/actions'
+import { createDiagnosedTask, getTask, saveDiagnosis, scheduleTaskLater, scheduleTaskThisWeek, type Task } from '../lib/tasks'
 
 const riskColor: Record<TaskDiagnosis['riskLevel'], string> = {
   HIGH: 'text-secondary',
@@ -8,23 +12,126 @@ const riskColor: Record<TaskDiagnosis['riskLevel'], string> = {
 }
 
 export default function DiagnoseScreen() {
+  const { user } = useAuth()
+  const { taskId } = useParams<{ taskId: string }>()
+  const navigate = useNavigate()
+
+  const [activeTaskId, setActiveTaskId] = useState<string | null>(taskId ?? null)
   const [rawInput, setRawInput] = useState('')
   const [diagnosis, setDiagnosis] = useState<TaskDiagnosis | null>(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [loadingTask, setLoadingTask] = useState(!!taskId)
+  const [scheduling, setScheduling] = useState<string | null>(null)
+  const [scheduled, setScheduled] = useState(false)
+
+  useEffect(() => {
+    if (!taskId) return
+    let cancelled = false
+
+    const load = async () => {
+      setLoadingTask(true)
+      let task: Task | null = null
+      try {
+        task = await getTask(taskId)
+      } catch {
+        // Transient: right after creating a doc, the auth token used for the
+        // first read can occasionally lag — retry once after a short delay.
+        await new Promise((resolve) => setTimeout(resolve, 500))
+        try {
+          task = await getTask(taskId)
+        } catch {
+          if (!cancelled) setError('タスクの読み込みに失敗しました。もう一度お試しください。')
+        }
+      }
+      if (cancelled) return
+      if (task) {
+        setRawInput(task.originalInput)
+        if (task.title) {
+          setDiagnosis({
+            title: task.title,
+            riskLevel: task.riskLevel ?? 'LOW',
+            riskLabel: task.riskLabel ?? '',
+            riskReason: task.riskReason ?? '',
+            suggestedAction: task.suggestedAction ?? '',
+            estimatedMinutes: task.estimatedMinutes ?? 0,
+          })
+        }
+      } else if (!error) {
+        setError('タスクが見つかりませんでした。')
+      }
+      setLoadingTask(false)
+    }
+
+    load()
+    return () => {
+      cancelled = true
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [taskId])
 
   const handleDiagnose = async () => {
-    if (!rawInput.trim()) return
+    if (!rawInput.trim() || !user) return
     setLoading(true)
     setError(null)
+    setScheduled(false)
     try {
       const result = await diagnoseTask(rawInput)
       setDiagnosis(result)
+      if (activeTaskId) {
+        await saveDiagnosis(activeTaskId, result)
+      } else {
+        const newId = await createDiagnosedTask(user.uid, rawInput, result)
+        setActiveTaskId(newId)
+      }
     } catch {
       setError('Diagnosis failed. Please try again.')
     } finally {
       setLoading(false)
     }
+  }
+
+  const handleDoThisWeek = async () => {
+    if (!activeTaskId) return
+    setScheduling('week')
+    try {
+      await scheduleTaskThisWeek(activeTaskId)
+      setScheduled(true)
+    } finally {
+      setScheduling(null)
+    }
+  }
+
+  const handleCreateNext15 = async () => {
+    if (!activeTaskId || !user || !diagnosis) return
+    setScheduling('next15')
+    try {
+      await scheduleTaskThisWeek(activeTaskId)
+      await createAction(user.uid, activeTaskId, diagnosis.title, diagnosis.suggestedAction)
+      setScheduled(true)
+      navigate('/')
+    } finally {
+      setScheduling(null)
+    }
+  }
+
+  const handleDoLater = async () => {
+    if (!activeTaskId) return
+    setScheduling('later')
+    try {
+      await scheduleTaskLater(activeTaskId)
+      setScheduled(true)
+    } finally {
+      setScheduling(null)
+    }
+  }
+
+  if (loadingTask) {
+    return (
+      <div className="flex-grow flex items-center justify-center">
+        <span className="material-symbols-outlined text-4xl text-primary animate-spin">progress_activity</span>
+      </div>
+    )
   }
 
   return (
@@ -104,16 +211,32 @@ export default function DiagnoseScreen() {
             <section className="neumorphic-raised p-6 rounded-lg bg-surface">
               <h3 className="text-xs font-bold text-outline uppercase tracking-widest mb-6">Suggested Actions</h3>
               <div className="flex flex-wrap gap-3">
-                <button className="btn-squish neumorphic-raised bg-primary text-on-primary px-6 py-3 rounded-full font-bold text-sm flex items-center gap-2">
-                  <span className="material-symbols-outlined text-sm">calendar_today</span> Do this week
+                <button
+                  className="btn-squish neumorphic-raised bg-primary text-on-primary px-6 py-3 rounded-full font-bold text-sm flex items-center gap-2 disabled:opacity-50"
+                  onClick={handleDoThisWeek}
+                  disabled={!diagnosis || scheduling !== null}
+                >
+                  <span className="material-symbols-outlined text-sm">calendar_today</span>
+                  {scheduling === 'week' ? '...' : 'Do this week'}
                 </button>
-                <button className="btn-squish neumorphic-raised bg-surface px-6 py-3 rounded-full font-bold text-sm flex items-center gap-2">
-                  <span className="material-symbols-outlined text-sm">bolt</span> Create Next 15
+                <button
+                  className="btn-squish neumorphic-raised bg-surface px-6 py-3 rounded-full font-bold text-sm flex items-center gap-2 disabled:opacity-50"
+                  onClick={handleCreateNext15}
+                  disabled={!diagnosis || scheduling !== null}
+                >
+                  <span className="material-symbols-outlined text-sm">bolt</span>
+                  {scheduling === 'next15' ? '...' : 'Create Next 15'}
                 </button>
-                <button className="btn-squish neumorphic-raised bg-surface px-6 py-3 rounded-full font-bold text-sm flex items-center gap-2">
-                  <span className="material-symbols-outlined text-sm">update</span> Do later
+                <button
+                  className="btn-squish neumorphic-raised bg-surface px-6 py-3 rounded-full font-bold text-sm flex items-center gap-2 disabled:opacity-50"
+                  onClick={handleDoLater}
+                  disabled={!diagnosis || scheduling !== null}
+                >
+                  <span className="material-symbols-outlined text-sm">update</span>
+                  {scheduling === 'later' ? '...' : 'Do later'}
                 </button>
               </div>
+              {scheduled && <p className="text-sm text-primary mt-4">✓ 保存しました</p>}
             </section>
 
             <section className="neumorphic-sunken p-6 rounded-lg bg-primary/5 border-l-4 border-primary">
