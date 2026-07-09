@@ -181,64 +181,6 @@ Respond with:
   return JSON.parse(result.response.text()) as ProcessedNote
 }
 
-export interface FeatureComparisonInput {
-  name: string
-  description: string
-}
-
-export interface FeatureComparisonResult {
-  name: string
-  quickToUse: string
-  coreImpact: string
-  difficulty: string
-  dependencies: string
-  deferRisk: string
-  claudeCodeReadiness: string
-}
-
-const compareModel = getGenerativeModel(ai, {
-  model: MODEL_ID,
-  generationConfig: {
-    responseMimeType: 'application/json',
-    responseSchema: Schema.object({
-      properties: {
-        results: Schema.array({
-          items: Schema.object({
-            properties: {
-              name: Schema.string(),
-              quickToUse: Schema.string(),
-              coreImpact: Schema.string(),
-              difficulty: Schema.string(),
-              dependencies: Schema.string(),
-              deferRisk: Schema.string(),
-              claudeCodeReadiness: Schema.string(),
-            },
-          }),
-        }),
-      },
-    }),
-  },
-})
-
-export async function compareFeatureCandidates(candidates: FeatureComparisonInput[]): Promise<FeatureComparisonResult[]> {
-  const prompt = `You are helping a solo developer compare feature candidates for their personal productivity app, so they can decide what to build next themselves. Do NOT declare a winner or tell them what to build — only organize the comparison so they can decide.
-
-Candidates:
-${candidates.map((c, i) => `${i + 1}. ${c.name}: ${c.description}`).join('\n')}
-
-For each candidate, respond in Japanese with a short phrase (not a full sentence) for each axis:
-- quickToUse: 自分が早く使えるようになるか
-- coreImpact: 中心課題に効くか
-- difficulty: 実装難易度
-- dependencies: 他機能への依存
-- deferRisk: 後回しにした場合のリスク
-- claudeCodeReadiness: Claude Codeに渡しやすいか`
-
-  const result = await compareModel.generateContent(prompt)
-  const parsed = JSON.parse(result.response.text()) as { results: FeatureComparisonResult[] }
-  return parsed.results
-}
-
 export interface IdeaOrganizeResult {
   suggestion: string
   options: string[]

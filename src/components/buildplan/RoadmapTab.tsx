@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { useAuth } from '../../lib/AuthContext'
 import {
   createFeature,
+  reorderFeature,
   seedInitialFeatures,
   subscribeFeatures,
   type Difficulty,
@@ -9,7 +10,6 @@ import {
   type FeatureColumn,
   type Priority,
 } from '../../lib/features'
-import { compareFeatureCandidates, type FeatureComparisonResult } from '../../lib/ai'
 import { subscribeUserSettings, setScopeGuard, type UserSettings } from '../../lib/userSettings'
 
 const columns: { id: FeatureColumn; label: string }[] = [
@@ -25,38 +25,62 @@ const priorityColor: Record<Priority, string> = {
   low: 'text-outline',
 }
 
-const phases = ['Phase 0: Design', 'Phase 1: Web MVP', 'Phase 2: Daily Use', 'Phase 3: PC Overlay', 'Phase 4: Mobile Support']
-const CURRENT_PHASE_INDEX = 1
-
 const defaultScopeGuard = {
   doNow: ['タスクを入れる', 'AI診断する', 'Next 15を出す', '作業/休憩状態を切り替える'],
   notNow: ['完全自動スケジューリング', '高度な分析ダッシュボード', 'チーム管理', '完全なデスクトップ常駐アプリ'],
 }
 
-function FeatureCard({ feature, onClick }: { feature: Feature; onClick: () => void }) {
+function FeatureCard({
+  feature,
+  onClick,
+  onMoveUp,
+  onMoveDown,
+}: {
+  feature: Feature
+  onClick: () => void
+  onMoveUp?: () => void
+  onMoveDown?: () => void
+}) {
   return (
-    <button
-      onClick={onClick}
-      className="w-full text-left neumorphic-raised bg-surface p-4 rounded-lg space-y-2 hover:scale-[1.02] transition-transform"
-    >
-      <div className="flex flex-wrap gap-1">
-        {feature.tags.slice(0, 3).map((tag) => (
-          <span key={tag} className="bg-orange-100 text-orange-700 px-2 py-0.5 rounded-full text-[10px] font-bold">
-            {tag}
-          </span>
-        ))}
+    <div className="neumorphic-raised bg-surface p-4 rounded-lg space-y-2">
+      <button onClick={onClick} className="w-full text-left space-y-2 hover:opacity-80 transition-opacity">
+        <div className="flex flex-wrap gap-1">
+          {feature.tags.slice(0, 3).map((tag) => (
+            <span key={tag} className="bg-orange-100 text-orange-700 px-2 py-0.5 rounded-full text-[10px] font-bold">
+              {tag}
+            </span>
+          ))}
+        </div>
+        <h5 className="text-sm font-bold text-on-surface">{feature.name}</h5>
+        <div className="flex items-center justify-between">
+          <span className={`text-[10px] font-bold uppercase ${priorityColor[feature.priority]}`}>{feature.priority}</span>
+          {feature.notes?.length > 0 && (
+            <span className="text-[10px] text-outline flex items-center gap-0.5">
+              <span className="material-symbols-outlined text-xs">chat_bubble</span>
+              {feature.notes.length}
+            </span>
+          )}
+        </div>
+      </button>
+      <div className="flex items-center justify-end gap-1 pt-1 border-t border-outline-variant/10">
+        <button
+          onClick={onMoveUp}
+          disabled={!onMoveUp}
+          className="p-1 rounded text-outline disabled:opacity-20 hover:text-orange-600 transition-colors"
+          title="上に移動"
+        >
+          <span className="material-symbols-outlined text-base">arrow_upward</span>
+        </button>
+        <button
+          onClick={onMoveDown}
+          disabled={!onMoveDown}
+          className="p-1 rounded text-outline disabled:opacity-20 hover:text-orange-600 transition-colors"
+          title="下に移動"
+        >
+          <span className="material-symbols-outlined text-base">arrow_downward</span>
+        </button>
       </div>
-      <h5 className="text-sm font-bold text-on-surface">{feature.name}</h5>
-      <div className="flex items-center justify-between">
-        <span className={`text-[10px] font-bold uppercase ${priorityColor[feature.priority]}`}>{feature.priority}</span>
-        {feature.notes?.length > 0 && (
-          <span className="text-[10px] text-outline flex items-center gap-0.5">
-            <span className="material-symbols-outlined text-xs">chat_bubble</span>
-            {feature.notes.length}
-          </span>
-        )}
-      </div>
-    </button>
+    </div>
   )
 }
 
@@ -72,9 +96,7 @@ export default function RoadmapTab({ onSelectFeature }: { onSelectFeature: (id: 
   const [newPriority, setNewPriority] = useState<Priority>('medium')
   const [newDifficulty, setNewDifficulty] = useState<Difficulty>('medium')
   const [newTags, setNewTags] = useState('')
-  const [compareIds, setCompareIds] = useState<string[]>([])
-  const [comparing, setComparing] = useState(false)
-  const [comparisonResults, setComparisonResults] = useState<FeatureComparisonResult[] | null>(null)
+  const [scopeGuardOpen, setScopeGuardOpen] = useState(false)
   const [editingScopeGuard, setEditingScopeGuard] = useState(false)
   const [doNowDraft, setDoNowDraft] = useState('')
   const [notNowDraft, setNotNowDraft] = useState('')
@@ -108,8 +130,16 @@ export default function RoadmapTab({ onSelectFeature }: { onSelectFeature: (id: 
   const byColumn = useMemo(() => {
     const map: Record<FeatureColumn, Feature[]> = { mvp: [], next: [], later: [], ideas: [] }
     for (const f of features) map[f.column].push(f)
+    for (const col of columns) map[col.id].sort((a, b) => a.order - b.order)
     return map
   }, [features])
+
+  const handleMove = (columnList: Feature[], index: number, direction: -1 | 1) => {
+    const neighbor = columnList[index + direction]
+    const feature = columnList[index]
+    if (!neighbor) return
+    reorderFeature(feature.id, feature.order, neighbor.id, neighbor.order)
+  }
 
   const handleAddFeature = async () => {
     if (!user || !newName.trim()) return
@@ -131,23 +161,6 @@ export default function RoadmapTab({ onSelectFeature }: { onSelectFeature: (id: 
     setShowAddForm(false)
   }
 
-  const toggleCompare = (id: string) => {
-    setCompareIds((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : prev.length >= 3 ? prev : [...prev, id]))
-    setComparisonResults(null)
-  }
-
-  const handleCompare = async () => {
-    const candidates = features.filter((f) => compareIds.includes(f.id))
-    if (candidates.length < 2) return
-    setComparing(true)
-    try {
-      const results = await compareFeatureCandidates(candidates.map((c) => ({ name: c.name, description: c.description })))
-      setComparisonResults(results)
-    } finally {
-      setComparing(false)
-    }
-  }
-
   const startEditingScopeGuard = () => {
     setDoNowDraft(scopeGuard.doNow.join('\n'))
     setNotNowDraft(scopeGuard.notNow.join('\n'))
@@ -163,29 +176,12 @@ export default function RoadmapTab({ onSelectFeature }: { onSelectFeature: (id: 
     setEditingScopeGuard(false)
   }
 
-  const compareCandidatePool = features.filter((f) => f.column !== 'mvp')
-
   return (
     <div className="space-y-8">
       <div>
         <h2 className="text-2xl font-bold text-orange-600">Build Roadmap</h2>
         <p className="text-sm text-on-surface-variant">このツールをどう育てるか</p>
       </div>
-
-      <section className="space-y-2">
-        <span className="text-[10px] font-bold text-orange-500 uppercase tracking-widest">Phase Tracker</span>
-        <div className="flex items-center gap-2">
-          {phases.map((phase, i) => (
-            <div key={phase} className="flex-1 flex flex-col items-center gap-1">
-              <div className={`w-full h-2 rounded-full ${i <= CURRENT_PHASE_INDEX ? 'bg-orange-500' : 'bg-surface-container-high'}`}></div>
-              <span className={`text-[9px] font-bold text-center ${i === CURRENT_PHASE_INDEX ? 'text-orange-600' : 'text-outline'}`}>
-                P{i}
-              </span>
-            </div>
-          ))}
-        </div>
-        <p className="text-xs text-on-surface-variant text-center">{phases[CURRENT_PHASE_INDEX]}</p>
-      </section>
 
       {currentFocus && (
         <section
@@ -284,8 +280,14 @@ export default function RoadmapTab({ onSelectFeature }: { onSelectFeature: (id: 
                 {col.label} ({byColumn[col.id].length})
               </h4>
               <div className="space-y-2">
-                {byColumn[col.id].map((f) => (
-                  <FeatureCard key={f.id} feature={f} onClick={() => onSelectFeature(f.id)} />
+                {byColumn[col.id].map((f, idx) => (
+                  <FeatureCard
+                    key={f.id}
+                    feature={f}
+                    onClick={() => onSelectFeature(f.id)}
+                    onMoveUp={idx > 0 ? () => handleMove(byColumn[col.id], idx, -1) : undefined}
+                    onMoveDown={idx < byColumn[col.id].length - 1 ? () => handleMove(byColumn[col.id], idx, 1) : undefined}
+                  />
                 ))}
               </div>
             </div>
@@ -293,107 +295,70 @@ export default function RoadmapTab({ onSelectFeature }: { onSelectFeature: (id: 
         </div>
       </section>
 
-      <section className="neumorphic-sunken rounded-xl p-5 space-y-3">
-        <div className="flex items-center gap-2">
-          <span className="material-symbols-outlined text-orange-500">balance</span>
-          <h4 className="text-xs font-bold text-orange-700 uppercase">Compare Candidates</h4>
-        </div>
-        <p className="text-xs text-on-surface-variant">MVP以外から2〜3件選んで比較します。AIは決めません、比較軸を整理するだけです。</p>
-        <div className="flex flex-wrap gap-2">
-          {compareCandidatePool.map((f) => (
-            <button
-              key={f.id}
-              onClick={() => toggleCompare(f.id)}
-              className={`px-3 py-1.5 rounded-full text-xs font-bold border ${
-                compareIds.includes(f.id) ? 'bg-orange-500 text-white border-orange-500' : 'bg-surface border-outline-variant text-on-surface-variant'
-              }`}
-            >
-              {f.name}
-            </button>
-          ))}
-        </div>
-        <button
-          onClick={handleCompare}
-          disabled={compareIds.length < 2 || comparing}
-          className="px-4 py-2 rounded-full text-xs font-bold bg-orange-500 text-white disabled:opacity-40"
-        >
-          {comparing ? '比較中…' : 'Compare with AI'}
-        </button>
-
-        {comparisonResults && (
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-3 pt-2">
-            {comparisonResults.map((r) => (
-              <div key={r.name} className="bg-surface rounded-lg p-3 space-y-1 border border-orange-100">
-                <p className="text-sm font-bold text-on-surface">{r.name}</p>
-                <p className="text-xs text-on-surface-variant">早く使えるか: {r.quickToUse}</p>
-                <p className="text-xs text-on-surface-variant">中心課題への効果: {r.coreImpact}</p>
-                <p className="text-xs text-on-surface-variant">難易度: {r.difficulty}</p>
-                <p className="text-xs text-on-surface-variant">他機能への依存: {r.dependencies}</p>
-                <p className="text-xs text-on-surface-variant">後回しリスク: {r.deferRisk}</p>
-                <p className="text-xs text-on-surface-variant">Claude Codeへの渡しやすさ: {r.claudeCodeReadiness}</p>
-              </div>
-            ))}
-          </div>
-        )}
-      </section>
-
-      <section className="bg-on-surface text-surface p-5 rounded-xl space-y-3">
-        <div className="flex items-center justify-between">
+      <section className="bg-on-surface text-surface rounded-xl overflow-hidden">
+        <button onClick={() => setScopeGuardOpen((v) => !v)} className="w-full flex items-center justify-between p-4">
           <div className="flex items-center gap-2">
-            <span className="material-symbols-outlined text-orange-400">security</span>
+            <span className="material-symbols-outlined text-orange-400 text-lg">security</span>
             <span className="text-[10px] font-bold uppercase text-orange-400">Scope Guard</span>
           </div>
-          {!editingScopeGuard && (
-            <button onClick={startEditingScopeGuard} className="text-[10px] font-bold text-orange-300 hover:underline">
-              編集
-            </button>
-          )}
-        </div>
-        {editingScopeGuard ? (
-          <div className="space-y-2">
-            <label className="text-[10px] font-bold text-orange-300 uppercase">Do Now (1行ずつ)</label>
-            <textarea
-              className="w-full p-2 text-xs rounded-lg bg-white/10 border-none resize-none"
-              rows={4}
-              value={doNowDraft}
-              onChange={(e) => setDoNowDraft(e.target.value)}
-            />
-            <label className="text-[10px] font-bold text-orange-300 uppercase">Not Now (1行ずつ)</label>
-            <textarea
-              className="w-full p-2 text-xs rounded-lg bg-white/10 border-none resize-none"
-              rows={4}
-              value={notNowDraft}
-              onChange={(e) => setNotNowDraft(e.target.value)}
-            />
-            <div className="flex gap-2">
-              <button onClick={() => setEditingScopeGuard(false)} className="flex-1 py-2 rounded-full text-xs font-bold bg-white/10">
-                Cancel
-              </button>
-              <button onClick={saveScopeGuard} className="flex-1 py-2 rounded-full text-xs font-bold bg-orange-500 text-white">
-                Save
-              </button>
+          <span className="material-symbols-outlined text-orange-300 text-lg">{scopeGuardOpen ? 'expand_less' : 'expand_more'}</span>
+        </button>
+        {scopeGuardOpen && (
+          <div className="px-4 pb-4 space-y-3">
+            <div className="flex justify-end">
+              {!editingScopeGuard && (
+                <button onClick={startEditingScopeGuard} className="text-[10px] font-bold text-orange-300 hover:underline">
+                  編集
+                </button>
+              )}
             </div>
-          </div>
-        ) : (
-          <div className="grid grid-cols-2 gap-4">
-            <div>
-              <p className="text-[10px] font-bold text-orange-300 uppercase mb-1">Do Now</p>
-              <ul className="text-xs space-y-1">
-                {scopeGuard.doNow.map((item, i) => (
-                  <li key={i}>・{item}</li>
-                ))}
-              </ul>
-            </div>
-            <div>
-              <p className="text-[10px] font-bold opacity-50 uppercase mb-1">Not Now</p>
-              <ul className="text-xs space-y-1 opacity-60">
-                {scopeGuard.notNow.map((item, i) => (
-                  <li key={i} className="line-through">
-                    {item}
-                  </li>
-                ))}
-              </ul>
-            </div>
+            {editingScopeGuard ? (
+              <div className="space-y-2">
+                <label className="text-[10px] font-bold text-orange-300 uppercase">Do Now (1行ずつ)</label>
+                <textarea
+                  className="w-full p-2 text-xs rounded-lg bg-white/10 border-none resize-none"
+                  rows={4}
+                  value={doNowDraft}
+                  onChange={(e) => setDoNowDraft(e.target.value)}
+                />
+                <label className="text-[10px] font-bold text-orange-300 uppercase">Not Now (1行ずつ)</label>
+                <textarea
+                  className="w-full p-2 text-xs rounded-lg bg-white/10 border-none resize-none"
+                  rows={4}
+                  value={notNowDraft}
+                  onChange={(e) => setNotNowDraft(e.target.value)}
+                />
+                <div className="flex gap-2">
+                  <button onClick={() => setEditingScopeGuard(false)} className="flex-1 py-2 rounded-full text-xs font-bold bg-white/10">
+                    Cancel
+                  </button>
+                  <button onClick={saveScopeGuard} className="flex-1 py-2 rounded-full text-xs font-bold bg-orange-500 text-white">
+                    Save
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <p className="text-[10px] font-bold text-orange-300 uppercase mb-1">Do Now</p>
+                  <ul className="text-xs space-y-1">
+                    {scopeGuard.doNow.map((item, i) => (
+                      <li key={i}>・{item}</li>
+                    ))}
+                  </ul>
+                </div>
+                <div>
+                  <p className="text-[10px] font-bold opacity-50 uppercase mb-1">Not Now</p>
+                  <ul className="text-xs space-y-1 opacity-60">
+                    {scopeGuard.notNow.map((item, i) => (
+                      <li key={i} className="line-through">
+                        {item}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              </div>
+            )}
           </div>
         )}
       </section>

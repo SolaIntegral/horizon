@@ -187,31 +187,6 @@ export default function FeatureDetailPanel({
         </select>
       </div>
 
-      <EditableField label="目的" value={feature.purpose || ''} onSave={(v) => updateFeature(feature.id, { purpose: v })} multiline />
-      <EditableField label="なぜ必要か" value={feature.whyNeeded || ''} onSave={(v) => updateFeature(feature.id, { whyNeeded: v })} multiline />
-      <EditableField label="MVPでの実装範囲" value={feature.mvpScope || ''} onSave={(v) => updateFeature(feature.id, { mvpScope: v })} multiline />
-      <EditableField label="後回しにする範囲" value={feature.laterScope || ''} onSave={(v) => updateFeature(feature.id, { laterScope: v })} multiline />
-      <EditableField label="必要な画面" value={feature.requiredScreens || ''} onSave={(v) => updateFeature(feature.id, { requiredScreens: v })} />
-      <EditableField label="必要なデータ" value={feature.requiredData || ''} onSave={(v) => updateFeature(feature.id, { requiredData: v })} />
-      <EditableField
-        label="Claude Codeに渡すメモ"
-        value={feature.claudeCodeNotes || ''}
-        onSave={(v) => updateFeature(feature.id, { claudeCodeNotes: v })}
-        multiline
-      />
-      {feature.compareNotes && (
-        <EditableField label="比較メモ" value={feature.compareNotes} onSave={(v) => updateFeature(feature.id, { compareNotes: v })} multiline />
-      )}
-
-      <label className="flex items-center gap-2 text-sm font-semibold">
-        <input
-          type="checkbox"
-          checked={feature.readyForClaudeCode}
-          onChange={(e) => updateFeature(feature.id, { readyForClaudeCode: e.target.checked })}
-        />
-        Claude Codeに渡す準備ができている
-      </label>
-
       <div className="space-y-2">
         <label className="text-[10px] font-bold text-outline uppercase tracking-widest">列を移動</label>
         <div className="flex flex-wrap gap-2">

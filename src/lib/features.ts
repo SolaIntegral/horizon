@@ -35,20 +35,12 @@ export interface Feature {
   priority: Priority
   difficulty: Difficulty
   tags: string[]
-  purpose?: string
-  whyNeeded?: string
-  mvpScope?: string
-  laterScope?: string
-  requiredScreens?: string
-  requiredData?: string
-  claudeCodeNotes?: string
-  compareNotes?: string
+  order: number
   notes: FeatureNote[]
   isCurrentFocus: boolean
   focusReason?: string
   focusExpectedEffect?: string
   focusNextAction?: string
-  readyForClaudeCode: boolean
   createdAt?: Timestamp
   updatedAt?: Timestamp
 }
@@ -69,13 +61,22 @@ export async function createFeature(userId: string, input: NewFeatureInput): Pro
     userId,
     ...input,
     status: 'idea' satisfies FeatureStatus,
+    order: Date.now(),
     notes: [],
     isCurrentFocus: false,
-    readyForClaudeCode: false,
     createdAt: serverTimestamp(),
     updatedAt: serverTimestamp(),
   })
   return docRef.id
+}
+
+// Swaps the `order` value of two features so one moves ahead of the other within
+// their column — used by the kanban card's up/down reorder buttons.
+export async function reorderFeature(featureId: string, featureOrder: number, neighborId: string, neighborOrder: number) {
+  await Promise.all([
+    updateDoc(doc(db, 'features', featureId), { order: neighborOrder, updatedAt: serverTimestamp() }),
+    updateDoc(doc(db, 'features', neighborId), { order: featureOrder, updatedAt: serverTimestamp() }),
+  ])
 }
 
 export function subscribeFeatures(userId: string, callback: (features: Feature[]) => void): Unsubscribe {

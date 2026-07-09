@@ -36,6 +36,7 @@ export default function IdeaParkingTab({ onSelectIdea }: { onSelectIdea: (id: st
   const [statusFilter, setStatusFilter] = useState<IdeaStatus | 'all'>('all')
   const [pinnedOnly, setPinnedOnly] = useState(false)
   const [search, setSearch] = useState('')
+  const [filtersOpen, setFiltersOpen] = useState(false)
   const inputRef = useRef<HTMLTextAreaElement>(null)
 
   useEffect(() => {
@@ -116,33 +117,45 @@ export default function IdeaParkingTab({ onSelectIdea }: { onSelectIdea: (id: st
       </section>
 
       <section className="space-y-2">
-        <input
-          className="w-full p-2 text-sm neumorphic-sunken border-none rounded-lg bg-surface"
-          placeholder="検索 (タイトル・メモ・タグ)"
-          value={search}
-          onChange={(e) => setSearch(e.target.value)}
-        />
-        <div className="flex flex-wrap gap-2">
-          {statusFilters.map((s) => (
-            <button
-              key={s}
-              onClick={() => setStatusFilter(s)}
-              className={`px-3 py-1 rounded-full text-xs font-bold ${
-                statusFilter === s ? 'bg-orange-500 text-white' : 'bg-surface-container text-on-surface-variant'
-              }`}
-            >
-              {s === 'all' ? 'All' : statusLabel[s]}
-            </button>
-          ))}
+        <div className="flex gap-2">
+          <input
+            className="flex-1 p-2 text-sm neumorphic-sunken border-none rounded-lg bg-surface"
+            placeholder="検索 (タイトル・メモ・タグ)"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+          />
           <button
             onClick={() => setPinnedOnly((v) => !v)}
-            className={`px-3 py-1 rounded-full text-xs font-bold flex items-center gap-1 ${
+            className={`px-3 py-1 rounded-full text-xs font-bold flex items-center gap-1 whitespace-nowrap ${
               pinnedOnly ? 'bg-orange-500 text-white' : 'bg-surface-container text-on-surface-variant'
             }`}
           >
             <span className="material-symbols-outlined text-xs">push_pin</span> Pinned
           </button>
+          <button
+            onClick={() => setFiltersOpen((v) => !v)}
+            className={`px-3 py-1 rounded-full text-xs font-bold flex items-center gap-1 whitespace-nowrap ${
+              filtersOpen || statusFilter !== 'all' ? 'bg-orange-500 text-white' : 'bg-surface-container text-on-surface-variant'
+            }`}
+          >
+            <span className="material-symbols-outlined text-xs">filter_list</span> 絞り込み
+          </button>
         </div>
+        {filtersOpen && (
+          <div className="flex flex-wrap gap-2">
+            {statusFilters.map((s) => (
+              <button
+                key={s}
+                onClick={() => setStatusFilter(s)}
+                className={`px-3 py-1 rounded-full text-xs font-bold ${
+                  statusFilter === s ? 'bg-orange-500 text-white' : 'bg-surface-container text-on-surface-variant'
+                }`}
+              >
+                {s === 'all' ? 'All' : statusLabel[s]}
+              </button>
+            ))}
+          </div>
+        )}
       </section>
 
       <section className="space-y-3">
