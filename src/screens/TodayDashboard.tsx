@@ -6,7 +6,6 @@ import { subscribeThisWeekTasks, type Task } from '../lib/tasks'
 import { subscribeUserSettings, setMainGoal, type UserSettings } from '../lib/userSettings'
 import { subscribeActiveWorkSession, type WorkSession } from '../lib/workSessions'
 import { getStatusMessage } from '../lib/statusMessages'
-import BuildPlanFAB from '../components/buildplan/BuildPlanFAB'
 
 type QuickStatus = 'working' | 'break' | 'replan'
 
@@ -126,8 +125,6 @@ export default function TodayDashboard() {
   }
 
   return (
-    <>
-    <BuildPlanFAB />
     <div className="flex-grow p-6 lg:p-10 overflow-y-auto pb-32 md:pb-10">
       <div className="max-w-6xl mx-auto space-y-8">
         <header className="flex flex-col md:flex-row md:items-center justify-between gap-4">
@@ -328,6 +325,5 @@ export default function TodayDashboard() {
         </section>
       </div>
     </div>
-    </>
   )
 }
