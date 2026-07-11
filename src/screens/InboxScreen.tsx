@@ -3,6 +3,7 @@ import { Link } from 'react-router-dom'
 import { useAuth } from '../lib/AuthContext'
 import { createInboxTask, deleteTask, subscribeInboxTasks, updateTaskText, type Task } from '../lib/tasks'
 import { formatRelativeTime } from '../lib/dateUtils'
+import HelpButton from '../components/HelpButton'
 
 type CaptureTab = 'text' | 'voice' | 'quickadd'
 
@@ -178,7 +179,14 @@ export default function InboxScreen() {
     <div className="flex-grow p-6 lg:p-10 overflow-y-auto pb-32 md:pb-10">
       <div className="max-w-4xl mx-auto space-y-12">
         <header className="flex justify-between items-center">
-          <h2 className="text-3xl font-bold text-primary">Inbox</h2>
+          <div className="flex items-center gap-2">
+            <h2 className="text-3xl font-bold text-primary">Inbox</h2>
+            <HelpButton title="Inboxの使い方">
+              <p>思いついたことをそのまま書いて「Add to Inbox」で記録する画面です。判断は後回しにして、まず書き出すことに集中してください。</p>
+              <p>複数行入力すると、1行が1タスクとして登録されます（例のとおり「1行につき1タスク」）。</p>
+              <p>記録したタスクは「Captured Today」に並びます。「Diagnose」を押すと、そのタスクをActionへ分割する計画作成画面に進みます。「⋮」から編集・削除もできます。</p>
+            </HelpButton>
+          </div>
         </header>
 
         <section className="flex flex-col items-center space-y-6">

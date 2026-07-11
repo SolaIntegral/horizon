@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { useAuth } from '../lib/AuthContext'
 import { checkQuizAnswer, generateGrowthMemo, type GrowthMemo, type QuizCheckResult } from '../lib/ai'
 import { saveGrowthLog, subscribeGrowthLogs, type GrowthLog } from '../lib/growthLogs'
+import HelpButton from '../components/HelpButton'
 
 function buildMarkdown(log: { reflectionText: string; aiMemo: GrowthMemo; quizAnswer?: string; createdAt?: Date }): string {
   const date = (log.createdAt ?? new Date()).toLocaleString()
@@ -117,7 +118,14 @@ export default function GrowthScreen() {
     <div className="flex-grow p-6 lg:p-10 overflow-y-auto pb-32 md:pb-10">
       <div className="max-w-6xl mx-auto space-y-10">
         <header>
-          <h2 className="text-4xl font-bold text-primary">Growth Log</h2>
+          <div className="flex items-center gap-2">
+            <h2 className="text-4xl font-bold text-primary">Growth Log</h2>
+            <HelpButton title="Growth Logの使い方">
+              <p>1日の振り返りを記録する画面です。</p>
+              <p>「今日、自分の言葉で説明できるようになったことは？」に書いて「Generate AI Memo」を押すと、AIが要点整理・確認クイズ・明日のチャレンジを作ってくれます。</p>
+              <p>クイズに回答すると簡易採点されます。「Save Log」で記録として保存、「Export Markdown」でファイルとして書き出せます。過去の振り返りは「Previous Reflections」に一覧表示されます。</p>
+            </HelpButton>
+          </div>
           <p className="text-lg text-on-surface-variant">Turn efforts into knowledge.</p>
         </header>
 
