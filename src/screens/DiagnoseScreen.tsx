@@ -1,15 +1,11 @@
 import { useEffect, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
+import { Timestamp } from 'firebase/firestore'
 import { useAuth } from '../lib/AuthContext'
-import { diagnoseTask, type TaskDiagnosis } from '../lib/ai'
+import { suggestActionBreakdown, type ActionSuggestion } from '../lib/ai'
 import { createAction } from '../lib/actions'
-import { createDiagnosedTask, getTask, saveDiagnosis, scheduleTaskLater, scheduleTaskThisWeek, type Task } from '../lib/tasks'
-
-const riskColor: Record<TaskDiagnosis['riskLevel'], string> = {
-  HIGH: 'text-secondary',
-  MEDIUM: 'text-primary',
-  LOW: 'text-outline',
-}
+import { createPlannedTask, getTask, savePlan, type Task } from '../lib/tasks'
+import HelpButton from '../components/HelpButton'
 
 export default function DiagnoseScreen() {
   const { user } = useAuth()
@@ -18,12 +14,16 @@ export default function DiagnoseScreen() {
 
   const [activeTaskId, setActiveTaskId] = useState<string | null>(taskId ?? null)
   const [rawInput, setRawInput] = useState('')
-  const [diagnosis, setDiagnosis] = useState<TaskDiagnosis | null>(null)
+  const [title, setTitle] = useState('')
+  const [outputGoal, setOutputGoal] = useState('')
+  const [currentState, setCurrentState] = useState('')
+  const [deadlineInput, setDeadlineInput] = useState('')
+  const [suggestions, setSuggestions] = useState<ActionSuggestion[] | null>(null)
   const [loading, setLoading] = useState(false)
+  const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [loadingTask, setLoadingTask] = useState(!!taskId)
-  const [scheduling, setScheduling] = useState<string | null>(null)
-  const [scheduled, setScheduled] = useState(false)
+  const [saved, setSaved] = useState(false)
 
   useEffect(() => {
     if (!taskId) return
@@ -47,16 +47,9 @@ export default function DiagnoseScreen() {
       if (cancelled) return
       if (task) {
         setRawInput(task.originalInput)
-        if (task.title) {
-          setDiagnosis({
-            title: task.title,
-            riskLevel: task.riskLevel ?? 'LOW',
-            riskLabel: task.riskLabel ?? '',
-            riskReason: task.riskReason ?? '',
-            suggestedAction: task.suggestedAction ?? '',
-            estimatedMinutes: task.estimatedMinutes ?? 0,
-          })
-        }
+        setTitle(task.title || task.originalInput)
+        setOutputGoal(task.outputGoal ?? '')
+        setCurrentState(task.currentState ?? '')
       } else if (!error) {
         setError('タスクが見つかりませんでした。')
       }
@@ -70,59 +63,49 @@ export default function DiagnoseScreen() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [taskId])
 
-  const handleDiagnose = async () => {
-    if (!rawInput.trim() || !user) return
+  const handleSuggestBreakdown = async () => {
+    if (!title.trim() || !outputGoal.trim() || !currentState.trim() || !user) return
     setLoading(true)
     setError(null)
-    setScheduled(false)
+    setSaved(false)
     try {
-      const result = await diagnoseTask(rawInput)
-      setDiagnosis(result)
-      if (activeTaskId) {
-        await saveDiagnosis(activeTaskId, result)
-      } else {
-        const newId = await createDiagnosedTask(user.uid, rawInput, result)
-        setActiveTaskId(newId)
-      }
+      const result = await suggestActionBreakdown({ title: title.trim(), outputGoal: outputGoal.trim(), currentState: currentState.trim() })
+      setSuggestions(result.actions)
     } catch {
-      setError('Diagnosis failed. Please try again.')
+      setError('分割案の提案に失敗しました。もう一度お試しください。')
     } finally {
       setLoading(false)
     }
   }
 
-  const handleDoThisWeek = async () => {
-    if (!activeTaskId) return
-    setScheduling('week')
-    try {
-      await scheduleTaskThisWeek(activeTaskId)
-      setScheduled(true)
-    } finally {
-      setScheduling(null)
-    }
+  const updateSuggestion = (index: number, patch: Partial<ActionSuggestion>) => {
+    setSuggestions((prev) => (prev ? prev.map((s, i) => (i === index ? { ...s, ...patch } : s)) : prev))
   }
 
-  const handleCreateNext15 = async () => {
-    if (!activeTaskId || !user || !diagnosis) return
-    setScheduling('next15')
+  const removeSuggestion = (index: number) => {
+    setSuggestions((prev) => (prev ? prev.filter((_, i) => i !== index) : prev))
+  }
+
+  const handleConfirmPlan = async () => {
+    if (!user || !suggestions || suggestions.length === 0) return
+    setSaving(true)
     try {
-      await scheduleTaskThisWeek(activeTaskId)
-      await createAction(user.uid, activeTaskId, diagnosis.title, diagnosis.suggestedAction)
-      setScheduled(true)
+      const deadline = deadlineInput ? Timestamp.fromDate(new Date(`${deadlineInput}T23:59:59`)) : null
+      const plan = { title: title.trim(), outputGoal: outputGoal.trim(), currentState: currentState.trim(), deadline }
+      let finalTaskId = activeTaskId
+      if (finalTaskId) {
+        await savePlan(finalTaskId, plan)
+      } else {
+        finalTaskId = await createPlannedTask(user.uid, rawInput, plan)
+        setActiveTaskId(finalTaskId)
+      }
+      for (const s of suggestions) {
+        await createAction(user.uid, finalTaskId, plan.title, s.title, s.estimatedMinutes, { completionCriteria: s.completionCriteria })
+      }
+      setSaved(true)
       navigate('/')
     } finally {
-      setScheduling(null)
-    }
-  }
-
-  const handleDoLater = async () => {
-    if (!activeTaskId) return
-    setScheduling('later')
-    try {
-      await scheduleTaskLater(activeTaskId)
-      setScheduled(true)
-    } finally {
-      setScheduling(null)
+      setSaving(false)
     }
   }
 
@@ -138,119 +121,123 @@ export default function DiagnoseScreen() {
     <div className="flex-grow p-6 lg:p-10 overflow-y-auto pb-32 md:pb-10">
       <div className="max-w-6xl mx-auto space-y-10">
         <header>
-          <h2 className="text-4xl font-bold text-primary mb-2">Task Diagnose</h2>
-          <p className="text-lg text-on-surface-variant">Let's refine your focus for maximum impact.</p>
+          <div className="flex items-center gap-2 mb-2">
+            <h2 className="text-4xl font-bold text-primary">Plan this Task</h2>
+            <HelpButton title="Planの使い方（タスクの分割）">
+              <p>1つのタスクを、実際に取り組めるActionに分割する画面です。</p>
+              <p>タイトル・完成イメージ（アウトプット）・現在地（どこまで出来ているか）・締切（任意）を入力し、「Actionへ分割してもらう」を押すと、AIが2〜6個のAction案を見積り時間・完了条件つきで提案します。</p>
+              <p>提案はその場で編集・削除できます。「この分割で計画を確定」を押すとタスクが「計画済み」になり、各ActionがToday画面やPlan画面の候補に表示されるようになります。</p>
+            </HelpButton>
+          </div>
+          <p className="text-lg text-on-surface-variant">完成イメージ・現在地を整理して、Actionに分割しましょう。</p>
         </header>
 
         <section className="neumorphic-raised p-6 rounded-lg bg-surface space-y-4">
           <h3 className="text-xs font-bold text-outline uppercase tracking-widest">Task Note</h3>
           <textarea
-            className="w-full h-28 p-4 text-sm neumorphic-sunken border-none rounded-lg focus:ring-2 focus:ring-primary/20 placeholder-outline/50 resize-none bg-surface"
+            className="w-full h-20 p-4 text-sm neumorphic-sunken border-none rounded-lg focus:ring-2 focus:ring-primary/20 placeholder-outline/50 resize-none bg-surface"
             placeholder="Need to finish that marketing report by Friday..."
             value={rawInput}
             onChange={(e) => setRawInput(e.target.value)}
           />
-          <button
-            className="btn-squish neumorphic-raised bg-primary text-on-primary px-6 py-3 rounded-full font-bold text-sm flex items-center gap-2 disabled:opacity-50"
-            onClick={handleDiagnose}
-            disabled={loading || !rawInput.trim()}
-          >
-            <span className="material-symbols-outlined text-sm">auto_awesome</span>
-            {loading ? 'Diagnosing…' : 'Diagnose'}
-          </button>
-          {error && <p className="text-sm text-secondary">{error}</p>}
         </section>
 
         <div className="grid grid-cols-1 xl:grid-cols-2 gap-10">
-          <div className="space-y-8">
-            <section className="neumorphic-raised p-6 rounded-lg bg-surface">
-              <h3 className="text-xs font-bold text-outline uppercase tracking-widest mb-6">Task Summary</h3>
-              <div className="space-y-4">
-                <p className="text-xs text-outline">Original Input:</p>
-                <p className="text-sm italic text-on-surface-variant px-4 py-3 neumorphic-sunken rounded-lg bg-surface">
-                  {diagnosis ? `"${rawInput}"` : 'Enter a task note above and click Diagnose.'}
-                </p>
-                {diagnosis && (
-                  <div className="pt-2">
-                    <h4 className="text-2xl font-bold text-primary mb-1">{diagnosis.title}</h4>
-                    <div className="flex flex-wrap gap-4 mt-4">
-                      <div className="flex items-center gap-2 text-sm font-semibold">
-                        <span className="material-symbols-outlined text-outline">schedule</span>
-                        {diagnosis.estimatedMinutes}m Est.
-                      </div>
-                    </div>
-                  </div>
-                )}
-              </div>
-            </section>
+          <section className="neumorphic-raised p-6 rounded-lg bg-surface space-y-5">
+            <h3 className="text-xs font-bold text-outline uppercase tracking-widest">Plan</h3>
+            <div className="space-y-2">
+              <label className="text-xs font-bold text-outline">タイトル</label>
+              <input
+                className="w-full p-3 text-sm neumorphic-sunken border-none rounded-lg bg-surface"
+                value={title}
+                onChange={(e) => setTitle(e.target.value)}
+                placeholder="タスクの短いタイトル"
+              />
+            </div>
+            <div className="space-y-2">
+              <label className="text-xs font-bold text-outline">完成イメージ（アウトプット）</label>
+              <textarea
+                className="w-full h-20 p-3 text-sm neumorphic-sunken border-none rounded-lg bg-surface resize-none"
+                value={outputGoal}
+                onChange={(e) => setOutputGoal(e.target.value)}
+                placeholder="どうなったら終わりか"
+              />
+            </div>
+            <div className="space-y-2">
+              <label className="text-xs font-bold text-outline">現在地（どこまで出来ているか）</label>
+              <textarea
+                className="w-full h-20 p-3 text-sm neumorphic-sunken border-none rounded-lg bg-surface resize-none"
+                value={currentState}
+                onChange={(e) => setCurrentState(e.target.value)}
+                placeholder="今どこまで進んでいるか"
+              />
+            </div>
+            <div className="space-y-2">
+              <label className="text-xs font-bold text-outline">締切（任意）</label>
+              <input
+                type="date"
+                className="w-full p-3 text-sm neumorphic-sunken border-none rounded-lg bg-surface"
+                value={deadlineInput}
+                onChange={(e) => setDeadlineInput(e.target.value)}
+              />
+            </div>
+            <button
+              className="btn-squish neumorphic-raised bg-primary text-on-primary px-6 py-3 rounded-full font-bold text-sm flex items-center gap-2 disabled:opacity-50"
+              onClick={handleSuggestBreakdown}
+              disabled={loading || !title.trim() || !outputGoal.trim() || !currentState.trim()}
+            >
+              <span className="material-symbols-outlined text-sm">auto_awesome</span>
+              {loading ? '分割案を考えています…' : 'Actionへ分割してもらう'}
+            </button>
+            {error && <p className="text-sm text-secondary">{error}</p>}
+          </section>
 
-            <section className="neumorphic-raised p-6 rounded-lg bg-surface">
-              <h3 className="text-xs font-bold text-outline uppercase tracking-widest mb-6">Risk Assessment</h3>
-              {diagnosis ? (
-                <div className="flex items-center gap-8">
-                  <div className="w-32 h-32 rounded-full neumorphic-sunken flex items-center justify-center relative p-1 overflow-hidden">
-                    <div className="absolute inset-0 risk-gauge opacity-30"></div>
-                    <div className="absolute inset-2 bg-surface rounded-full"></div>
-                    <div className="text-center relative z-10">
-                      <p className={`text-xl font-bold ${riskColor[diagnosis.riskLevel]}`}>{diagnosis.riskLevel}</p>
-                      <p className="text-[10px] text-outline font-bold">RISK</p>
-                    </div>
+          <section className="neumorphic-raised p-6 rounded-lg bg-surface space-y-4">
+            <h3 className="text-xs font-bold text-outline uppercase tracking-widest">Suggested Actions</h3>
+            {!suggestions && <p className="text-sm text-outline">分割案はここに表示されます。</p>}
+            {suggestions && suggestions.length === 0 && <p className="text-sm text-outline">Actionがありません。</p>}
+            <div className="space-y-3">
+              {suggestions?.map((s, i) => (
+                <div key={i} className="neumorphic-sunken rounded-lg p-4 bg-surface space-y-2">
+                  <div className="flex items-center gap-2">
+                    <input
+                      className="flex-1 p-2 text-sm font-bold neumorphic-raised border-none rounded-lg bg-surface"
+                      value={s.title}
+                      onChange={(e) => updateSuggestion(i, { title: e.target.value })}
+                    />
+                    <input
+                      type="number"
+                      min={1}
+                      className="w-20 p-2 text-sm neumorphic-raised border-none rounded-lg bg-surface"
+                      value={s.estimatedMinutes}
+                      onChange={(e) => updateSuggestion(i, { estimatedMinutes: parseInt(e.target.value, 10) || 0 })}
+                    />
+                    <span className="text-xs text-on-surface-variant">分</span>
+                    <button onClick={() => removeSuggestion(i)} className="text-outline hover:text-secondary transition-colors">
+                      <span className="material-symbols-outlined text-base">close</span>
+                    </button>
                   </div>
-                  <div className="flex-1">
-                    <p className={`text-lg font-bold mb-1 ${riskColor[diagnosis.riskLevel]}`}>{diagnosis.riskLabel}</p>
-                    <p className="text-sm text-outline leading-relaxed">{diagnosis.riskReason}</p>
-                  </div>
+                  <input
+                    className="w-full p-2 text-xs neumorphic-raised border-none rounded-lg bg-surface text-on-surface-variant"
+                    value={s.completionCriteria}
+                    onChange={(e) => updateSuggestion(i, { completionCriteria: e.target.value })}
+                    placeholder="完了条件"
+                  />
                 </div>
-              ) : (
-                <p className="text-sm text-outline">Risk assessment will appear here after diagnosis.</p>
-              )}
-            </section>
-          </div>
-
-          <div className="space-y-8">
-            <section className="neumorphic-raised p-6 rounded-lg bg-surface">
-              <h3 className="text-xs font-bold text-outline uppercase tracking-widest mb-6">Suggested Actions</h3>
-              <div className="flex flex-wrap gap-3">
-                <button
-                  className="btn-squish neumorphic-raised bg-primary text-on-primary px-6 py-3 rounded-full font-bold text-sm flex items-center gap-2 disabled:opacity-50"
-                  onClick={handleDoThisWeek}
-                  disabled={!diagnosis || scheduling !== null}
-                >
-                  <span className="material-symbols-outlined text-sm">calendar_today</span>
-                  {scheduling === 'week' ? '...' : 'Do this week'}
-                </button>
-                <button
-                  className="btn-squish neumorphic-raised bg-surface px-6 py-3 rounded-full font-bold text-sm flex items-center gap-2 disabled:opacity-50"
-                  onClick={handleCreateNext15}
-                  disabled={!diagnosis || scheduling !== null}
-                >
-                  <span className="material-symbols-outlined text-sm">bolt</span>
-                  {scheduling === 'next15' ? '...' : 'Create Next 15'}
-                </button>
-                <button
-                  className="btn-squish neumorphic-raised bg-surface px-6 py-3 rounded-full font-bold text-sm flex items-center gap-2 disabled:opacity-50"
-                  onClick={handleDoLater}
-                  disabled={!diagnosis || scheduling !== null}
-                >
-                  <span className="material-symbols-outlined text-sm">update</span>
-                  {scheduling === 'later' ? '...' : 'Do later'}
-                </button>
-              </div>
-              {scheduled && <p className="text-sm text-primary mt-4">✓ 保存しました</p>}
-            </section>
-
-            <section className="neumorphic-sunken p-6 rounded-lg bg-primary/5 border-l-4 border-primary">
-              <div className="flex items-center gap-2 mb-4">
-                <span className="material-symbols-outlined text-primary">auto_awesome</span>
-                <h3 className="text-xs font-bold text-primary uppercase">AI Insight</h3>
-              </div>
-              <p className="text-on-surface-variant font-medium">
-                {diagnosis
-                  ? diagnosis.suggestedAction
-                  : 'Your suggested first next-step will appear here after diagnosis.'}
-              </p>
-            </section>
-          </div>
+              ))}
+            </div>
+            {suggestions && suggestions.length > 0 && (
+              <button
+                className="btn-squish neumorphic-raised bg-primary text-on-primary px-6 py-3 rounded-full font-bold text-sm flex items-center gap-2 disabled:opacity-50 w-full justify-center"
+                onClick={handleConfirmPlan}
+                disabled={saving}
+              >
+                <span className="material-symbols-outlined text-sm">check_circle</span>
+                {saving ? '保存しています…' : 'この分割で計画を確定'}
+              </button>
+            )}
+            {saved && <p className="text-sm text-primary">✓ 保存しました</p>}
+          </section>
         </div>
       </div>
     </div>

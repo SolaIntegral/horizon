@@ -5,47 +5,58 @@ const ai = getAI(app, { backend: new GoogleAIBackend() })
 
 const MODEL_ID = 'gemini-2.5-flash-lite'
 
-export interface TaskDiagnosis {
+export interface TaskPlanInput {
   title: string
-  riskLevel: 'HIGH' | 'MEDIUM' | 'LOW'
-  riskLabel: string
-  riskReason: string
-  suggestedAction: string
-  estimatedMinutes: number
+  outputGoal: string
+  currentState: string
 }
 
-const diagnosisModel = getGenerativeModel(ai, {
+export interface ActionSuggestion {
+  title: string
+  estimatedMinutes: number
+  completionCriteria: string
+}
+
+export interface BreakdownResult {
+  actions: ActionSuggestion[]
+}
+
+const breakdownModel = getGenerativeModel(ai, {
   model: MODEL_ID,
   generationConfig: {
     responseMimeType: 'application/json',
     responseSchema: Schema.object({
       properties: {
-        title: Schema.string(),
-        riskLevel: Schema.enumString({ enum: ['HIGH', 'MEDIUM', 'LOW'] }),
-        riskLabel: Schema.string(),
-        riskReason: Schema.string(),
-        suggestedAction: Schema.string(),
-        estimatedMinutes: Schema.number(),
+        actions: Schema.array({
+          items: Schema.object({
+            properties: {
+              title: Schema.string(),
+              estimatedMinutes: Schema.number(),
+              completionCriteria: Schema.string(),
+            },
+          }),
+        }),
       },
     }),
   },
 })
 
-export async function diagnoseTask(rawInput: string): Promise<TaskDiagnosis> {
-  const prompt = `You are a productivity coach helping a user turn a rough task note into a clear, actionable item.
+export async function suggestActionBreakdown(input: TaskPlanInput): Promise<BreakdownResult> {
+  const prompt = `You are a productivity coach helping a user break a task down into small, concrete 15-45 minute actions.
 
-Task note (may be in Japanese or English): "${rawInput}"
+Task title: "${input.title}"
+Desired output / done-looks-like (完成イメージ): "${input.outputGoal}"
+Current state (現在地、どこまで出来ているか): "${input.currentState}"
 
-Analyze it and respond with:
-- title: a short, clear task title
-- riskLevel: HIGH, MEDIUM, or LOW risk of the task expanding, being ambiguous, or causing overwork
-- riskLabel: a short 2-4 word label for the main risk (e.g. "Incomplete Criteria", "Unclear Scope")
-- riskReason: one sentence explaining the risk in the same language as the task note
-- suggestedAction: a concrete first next-step the user could do in 15 minutes or less, in the same language as the task note
-- estimatedMinutes: a rough total time estimate in minutes for the whole task`
+Propose 2-6 concrete next actions to get from the current state to the desired output. For each action:
+- title: a short, concrete action title, in the same language as the input
+- estimatedMinutes: a realistic time estimate, generally between 15 and 45 minutes (round to 15/30/45 where sensible)
+- completionCriteria: one short sentence describing exactly what "done" looks like for this action, in the same language as the input
 
-  const result = await diagnosisModel.generateContent(prompt)
-  return JSON.parse(result.response.text()) as TaskDiagnosis
+Never propose a single action estimated over 45 minutes — split it further instead.`
+
+  const result = await breakdownModel.generateContent(prompt)
+  return JSON.parse(result.response.text()) as BreakdownResult
 }
 
 export interface GrowthMemo {
@@ -167,7 +178,7 @@ const noteModel = getGenerativeModel(ai, {
   },
 })
 
-export async function processProgressNote(rawNote: string, currentActionTitle: string): Promise<ProcessedNote> {
+export async function processSessionNote(rawNote: string, currentActionTitle: string): Promise<ProcessedNote> {
   const prompt = `You are a focus coach analyzing a user's short free-text progress note written during or after a work session (may be in Japanese or English).
 
 Current Next-15 Action: "${currentActionTitle}"

@@ -2,13 +2,40 @@ import { useEffect, useRef, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import { useAuth } from '../lib/AuthContext'
 import { completeAction, createAction, getAction, overwriteAction, startAction, type Action } from '../lib/actions'
-import { completeWorkSession, createWorkSession, endWorkSession } from '../lib/workSessions'
-import { createProgressNote, getLatestBreakStartNote, processNoteWithAI, type SuggestedAction } from '../lib/progressNotes'
+import {
+  completeWorkSession,
+  createWorkSession,
+  endWorkSession,
+  getLatestBreakStartSession,
+  processSessionNoteWithAI,
+  type InterruptionReason,
+  type SuggestedAction,
+} from '../lib/workSessions'
+import HelpButton from '../components/HelpButton'
 
 type Phase = 'loading' | 'focus' | 'break' | 'suggestions' | 'error'
 type NotePromptType = 'done' | 'break_start' | 'exit' | null
 
 const BREAK_PLANNED_MINUTES = 5
+
+const overlayHelpContent = (
+  <>
+    <p>実際にActionへ取り組むタイマー画面です。残り時間が表示され、タップで一時停止・再開できます。</p>
+    <p>「Take Break」で休憩に入り、「Done」でAction完了、右上の×で中断して退出できます。休憩・完了・中断のタイミングで一言メモを残せます（Skipも可）。</p>
+    <p>右上の×で中断するときは、理由・残り時間の見積り・次に戻ったときの最初の一手も記録できます。</p>
+    <p>休憩前にメモを残しておくと、休憩から戻る際にAIが次のAction案を提案することがあります。</p>
+  </>
+)
+
+const interruptionReasonLabels: Record<InterruptionReason, string> = {
+  tired: '疲れた',
+  stuck: '行き詰まった',
+  unmotivated: '飽きた・集中できない',
+  waiting_reply: '返信待ち',
+  waiting_info: '資料・情報待ち',
+  other_priority: '別の作業を優先',
+  other: 'その他',
+}
 
 function formatClock(totalSeconds: number) {
   const sign = totalSeconds < 0 ? '-' : ''
@@ -34,6 +61,9 @@ export default function OverlayScreen() {
   const [paused, setPaused] = useState(false)
   const [notePrompt, setNotePrompt] = useState<NotePromptType>(null)
   const [noteText, setNoteText] = useState('')
+  const [interruptionReason, setInterruptionReason] = useState<InterruptionReason | null>(null)
+  const [estimatedRemainingMinutes, setEstimatedRemainingMinutes] = useState('')
+  const [nextStartAction, setNextStartAction] = useState('')
   const [suggestions, setSuggestions] = useState<SuggestedAction[] | null>(null)
   const [editingAction, setEditingAction] = useState(false)
   const [editTitle, setEditTitle] = useState('')
@@ -106,8 +136,9 @@ export default function OverlayScreen() {
     setEditingAction(false)
   }
 
-  const performTakeBreak = async () => {
-    if (sessionId) await completeWorkSession(sessionId, currentElapsedMinutes())
+  const performTakeBreak = async (note?: string) => {
+    if (sessionId) await completeWorkSession(sessionId, taskId, currentElapsedMinutes(), note ? { trigger: 'break_start', note } : undefined)
+    if (note) processSessionNoteWithAI(sessionId!, note, action.title, actionId)
     const sid = await createWorkSession(user.uid, 'break', taskId, actionId, BREAK_PLANNED_MINUTES)
     setSessionId(sid)
     setPhase('break')
@@ -120,11 +151,11 @@ export default function OverlayScreen() {
   }
 
   const handleBackToWork = async () => {
-    if (sessionId) await completeWorkSession(sessionId, currentElapsedMinutes())
+    if (sessionId) await completeWorkSession(sessionId, taskId, currentElapsedMinutes())
     try {
-      const note = await getLatestBreakStartNote(user.uid, actionId)
-      if (note && note.aiStatus === 'processed' && note.suggestedActions && note.suggestedActions.length > 0) {
-        setSuggestions(note.suggestedActions)
+      const session = await getLatestBreakStartSession(user.uid, actionId)
+      if (session && session.aiStatus === 'processed' && session.suggestedActions && session.suggestedActions.length > 0) {
+        setSuggestions(session.suggestedActions)
         setPhase('suggestions')
         return
       }
@@ -150,21 +181,43 @@ export default function OverlayScreen() {
     await startNewFocusSession()
   }
 
-  const performDone = async () => {
-    if (sessionId) await completeWorkSession(sessionId, currentElapsedMinutes())
+  const performDone = async (note?: string) => {
+    if (sessionId) await completeWorkSession(sessionId, taskId, currentElapsedMinutes(), note ? { trigger: 'done', note } : undefined)
+    if (note) processSessionNoteWithAI(sessionId!, note, action.title, actionId)
     await completeAction(actionId)
     navigate('/')
   }
 
-  const performExit = async () => {
-    if (sessionId) await endWorkSession(sessionId, currentElapsedMinutes())
+  const performExit = async (note?: {
+    text?: string
+    reason?: InterruptionReason
+    estimatedRemainingMinutes?: number
+    nextStartAction?: string
+  }) => {
+    if (sessionId) {
+      await endWorkSession(sessionId, taskId, currentElapsedMinutes(), {
+        trigger: 'exit',
+        note: note?.text,
+        interruptionReason: note?.reason ?? undefined,
+        estimatedRemainingMinutes: note?.estimatedRemainingMinutes,
+        nextStartAction: note?.nextStartAction,
+      })
+      if (note?.text) processSessionNoteWithAI(sessionId, note.text, action.title, actionId)
+    }
     navigate('/')
+  }
+
+  const resetNoteForm = () => {
+    setNotePrompt(null)
+    setNoteText('')
+    setInterruptionReason(null)
+    setEstimatedRemainingMinutes('')
+    setNextStartAction('')
   }
 
   const handleNoteSkip = () => {
     const type = notePrompt
-    setNotePrompt(null)
-    setNoteText('')
+    resetNoteForm()
     if (type === 'done') performDone()
     else if (type === 'break_start') performTakeBreak()
     else if (type === 'exit') performExit()
@@ -173,15 +226,19 @@ export default function OverlayScreen() {
   const handleNoteSave = async () => {
     const type = notePrompt
     const text = noteText.trim()
-    setNotePrompt(null)
-    setNoteText('')
-    if (text && sessionId && type) {
-      const noteId = await createProgressNote(user.uid, taskId, actionId, sessionId, text, type)
-      processNoteWithAI(noteId, text, action.title, actionId)
-    }
-    if (type === 'done') await performDone()
-    else if (type === 'break_start') await performTakeBreak()
-    else if (type === 'exit') await performExit()
+    const reason = interruptionReason
+    const remaining = parseInt(estimatedRemainingMinutes, 10)
+    const nextAction = nextStartAction.trim()
+    resetNoteForm()
+    if (type === 'done') await performDone(text || undefined)
+    else if (type === 'break_start') await performTakeBreak(text || undefined)
+    else if (type === 'exit')
+      await performExit({
+        text: text || undefined,
+        reason: reason ?? undefined,
+        estimatedRemainingMinutes: Number.isFinite(remaining) && remaining > 0 ? remaining : undefined,
+        nextStartAction: nextAction || undefined,
+      })
   }
 
   const plannedSeconds = (phase === 'focus' ? action.estimatedMinutes : BREAK_PLANNED_MINUTES) * 60
@@ -200,9 +257,12 @@ export default function OverlayScreen() {
                   {paused ? 'Paused' : 'Working'}
                 </span>
               </div>
-              <button onClick={() => setNotePrompt('exit')} className="text-outline-variant hover:text-secondary transition-colors">
-                <span className="material-symbols-outlined">close</span>
-              </button>
+              <div className="flex items-center gap-3">
+                <HelpButton title="Overlayの使い方">{overlayHelpContent}</HelpButton>
+                <button onClick={() => setNotePrompt('exit')} className="text-outline-variant hover:text-secondary transition-colors">
+                  <span className="material-symbols-outlined">close</span>
+                </button>
+              </div>
             </div>
             <button onClick={() => setPaused((p) => !p)} className="text-center py-2 w-full group" title={paused ? '再開する' : '一時停止する'}>
               <h2
@@ -282,9 +342,12 @@ export default function OverlayScreen() {
                 <div className="w-2.5 h-2.5 bg-secondary rounded-full"></div>
                 <span className="text-[10px] font-bold uppercase tracking-widest text-on-surface-variant">Break</span>
               </div>
-              <button onClick={() => setNotePrompt('exit')} className="text-outline-variant hover:text-secondary transition-colors">
-                <span className="material-symbols-outlined">close</span>
-              </button>
+              <div className="flex items-center gap-3">
+                <HelpButton title="Overlayの使い方">{overlayHelpContent}</HelpButton>
+                <button onClick={() => setNotePrompt('exit')} className="text-outline-variant hover:text-secondary transition-colors">
+                  <span className="material-symbols-outlined">close</span>
+                </button>
+              </div>
             </div>
             <div className="text-center py-2">
               <h2 className="text-7xl font-bold tracking-tight text-secondary">{formatClock(elapsedSeconds)}</h2>
@@ -368,12 +431,30 @@ export default function OverlayScreen() {
 
       {notePrompt && (
         <div className="fixed inset-0 bg-black/30 flex items-center justify-center z-50 p-6">
-          <div className="w-full max-w-sm neumorphic-raised bg-surface rounded-xl p-8 space-y-4">
+          <div className="w-full max-w-sm neumorphic-raised bg-surface rounded-xl p-8 space-y-4 max-h-[90vh] overflow-y-auto">
             <p className="text-sm font-bold text-on-surface">
               {notePrompt === 'done' && '今回の進捗を1行だけ残しますか？'}
               {notePrompt === 'break_start' && '休憩後に戻りやすくするために、今の状況をメモしますか？'}
-              {notePrompt === 'exit' && '再開しやすくするために、今どこまで進んだかを1行だけ残しますか？'}
+              {notePrompt === 'exit' && '再開しやすくするために、今の状況を残しますか？'}
             </p>
+            {notePrompt === 'exit' && (
+              <div className="space-y-2">
+                <label className="text-xs font-bold text-outline">中断理由</label>
+                <div className="flex flex-wrap gap-2">
+                  {(Object.keys(interruptionReasonLabels) as InterruptionReason[]).map((reason) => (
+                    <button
+                      key={reason}
+                      onClick={() => setInterruptionReason(reason)}
+                      className={`px-3 py-1.5 rounded-full text-xs font-bold transition-all ${
+                        interruptionReason === reason ? 'neumorphic-sunken bg-secondary/10 text-secondary' : 'neumorphic-raised text-on-surface-variant'
+                      }`}
+                    >
+                      {interruptionReasonLabels[reason]}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
             <textarea
               className="w-full p-3 text-sm neumorphic-sunken border-none rounded-lg bg-surface resize-none"
               rows={3}
@@ -382,6 +463,29 @@ export default function OverlayScreen() {
               onChange={(e) => setNoteText(e.target.value)}
               autoFocus
             />
+            {notePrompt === 'exit' && (
+              <div className="space-y-3">
+                <div className="space-y-1">
+                  <label className="text-xs font-bold text-outline">残り時間の見積り（分・任意）</label>
+                  <input
+                    type="number"
+                    min={1}
+                    className="w-full p-2 text-sm neumorphic-sunken border-none rounded-lg bg-surface"
+                    value={estimatedRemainingMinutes}
+                    onChange={(e) => setEstimatedRemainingMinutes(e.target.value)}
+                  />
+                </div>
+                <div className="space-y-1">
+                  <label className="text-xs font-bold text-outline">次に戻った時の最初の行動（任意）</label>
+                  <input
+                    className="w-full p-2 text-sm neumorphic-sunken border-none rounded-lg bg-surface"
+                    value={nextStartAction}
+                    onChange={(e) => setNextStartAction(e.target.value)}
+                    placeholder="例：先行研究のメモを読み直す"
+                  />
+                </div>
+              </div>
+            )}
             <div className="flex gap-3">
               <button
                 onClick={handleNoteSkip}

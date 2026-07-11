@@ -13,6 +13,7 @@ import {
   type Unsubscribe,
 } from 'firebase/firestore'
 import { db } from './firebase'
+import { addEstimatedMinutes } from './tasks'
 
 export type ActionStatus = 'todo' | 'doing' | 'done' | 'skipped'
 
@@ -22,8 +23,11 @@ export interface Action {
   taskTitle: string
   userId: string
   title: string
+  output?: string // このActionで生まれる具体的な成果物
+  completionCriteria?: string // 完了とみなす条件
   estimatedMinutes: number
   status: ActionStatus
+  deferredTo?: Timestamp | null // 中断時に仮置きされた再開予定日
   startedAt?: Timestamp | null
   completedAt?: Timestamp | null
   createdAt?: Timestamp
@@ -38,17 +42,21 @@ export async function createAction(
   taskTitle: string,
   title: string,
   estimatedMinutes: number = DEFAULT_ACTION_MINUTES,
+  extra?: { output?: string; completionCriteria?: string },
 ): Promise<string> {
   const docRef = await addDoc(collection(db, 'actions'), {
     userId,
     taskId,
     taskTitle,
     title,
+    ...(extra?.output ? { output: extra.output } : {}),
+    ...(extra?.completionCriteria ? { completionCriteria: extra.completionCriteria } : {}),
     estimatedMinutes,
     status: 'todo' satisfies ActionStatus,
     createdAt: serverTimestamp(),
     updatedAt: serverTimestamp(),
   })
+  await addEstimatedMinutes(taskId, estimatedMinutes)
   return docRef.id
 }
 
@@ -103,4 +111,8 @@ export async function completeAction(actionId: string) {
 
 export async function overwriteAction(actionId: string, title: string, estimatedMinutes: number) {
   await updateDoc(doc(db, 'actions', actionId), { title, estimatedMinutes, updatedAt: serverTimestamp() })
+}
+
+export async function setActionDeferredTo(actionId: string, deferredTo: Timestamp | null) {
+  await updateDoc(doc(db, 'actions', actionId), { deferredTo, updatedAt: serverTimestamp() })
 }

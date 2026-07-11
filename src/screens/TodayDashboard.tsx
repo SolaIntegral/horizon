@@ -2,10 +2,11 @@ import { useEffect, useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { useAuth } from '../lib/AuthContext'
 import { subscribeActiveActions, subscribeDoneActions, skipAction, overwriteAction, type Action } from '../lib/actions'
-import { subscribeThisWeekTasks, type Task } from '../lib/tasks'
+import { subscribeScheduledTasks, type Task } from '../lib/tasks'
 import { subscribeUserSettings, setMainGoal, type UserSettings } from '../lib/userSettings'
 import { subscribeActiveWorkSession, type WorkSession } from '../lib/workSessions'
 import { getStatusMessage } from '../lib/statusMessages'
+import HelpButton from '../components/HelpButton'
 
 type QuickStatus = 'working' | 'break' | 'replan'
 
@@ -44,7 +45,7 @@ export default function TodayDashboard() {
     if (!user) return
     const unsub1 = subscribeActiveActions(user.uid, setActiveActions)
     const unsub2 = subscribeDoneActions(user.uid, setDoneActions)
-    const unsub3 = subscribeThisWeekTasks(user.uid, setThisWeekTasks)
+    const unsub3 = subscribeScheduledTasks(user.uid, setThisWeekTasks)
     const unsub4 = subscribeUserSettings(user.uid, setSettings)
     const unsub5 = subscribeActiveWorkSession(user.uid, setActiveSession)
     return () => {
@@ -71,7 +72,7 @@ export default function TodayDashboard() {
   const tasksNearDeadlineUndecomposed = useMemo(
     () =>
       thisWeekTasks.filter(
-        (t) => t.dueDate && isWithinDays(t.dueDate.toDate(), 3) && !taskIdsWithActiveAction.has(t.id),
+        (t) => t.deadline && isWithinDays(t.deadline.toDate(), 3) && !taskIdsWithActiveAction.has(t.id),
       ).length,
     [thisWeekTasks, taskIdsWithActiveAction],
   )
@@ -146,7 +147,17 @@ export default function TodayDashboard() {
       <div className="max-w-6xl mx-auto space-y-8">
         <header className="flex flex-col md:flex-row md:items-center justify-between gap-4">
           <div>
-            <h2 className="text-3xl font-bold text-primary tracking-tight">Today</h2>
+            <div className="flex items-center gap-2">
+              <h2 className="text-3xl font-bold text-primary tracking-tight">Today</h2>
+              <HelpButton title="Todayの使い方">
+                <p>今日取り組むActionを表示する画面です。</p>
+                <p>
+                  「Next 15 Actions」には、進行中または未着手のActionが並びます。「Start」を押すとOverlay（作業タイマー）が始まり、「Edit」で内容や見積り時間を変更、「Skip」で後回しにできます。
+                </p>
+                <p>上部のメッセージは、作業状況に応じてHoriが自動で選ぶ一言です（AI生成ではなくルールに基づく固定文からの選択です）。</p>
+                <p>「Add Task」からInboxへ新しいタスクを追加できます。今日どのActionをどの時間に配置するかは「Plan」画面で決めます。</p>
+              </HelpButton>
+            </div>
             <p className="text-lg text-on-surface-variant">{todayLabel}</p>
           </div>
           <div className="flex items-center gap-4">

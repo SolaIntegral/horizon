@@ -10,13 +10,13 @@
       ]
     },
     {
-      "collectionGroup": "progressNotes",
+      "collectionGroup": "workSessions",
       "queryScope": "COLLECTION",
       "fields": [
         { "fieldPath": "userId", "order": "ASCENDING" },
         { "fieldPath": "actionId", "order": "ASCENDING" },
-        { "fieldPath": "trigger", "order": "ASCENDING" },
-        { "fieldPath": "createdAt", "order": "DESCENDING" }
+        { "fieldPath": "noteTrigger", "order": "ASCENDING" },
+        { "fieldPath": "startedAt", "order": "DESCENDING" }
       ]
     },
     {

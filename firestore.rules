@@ -30,9 +30,19 @@ service cloud.firestore {
       allow create: if ownsIncomingDoc();
     }
 
-    match /progressNotes/{noteId} {
-      allow read, update, delete: if ownsDoc();
-      allow create: if ownsIncomingDoc();
+    // Doc id is `${userId}_${date}` and may not exist yet on first read
+    // (subscribeDailyPlan/subscribeDailyReview listen before any plan for
+    // today has been created), so ownership can't be checked via
+    // resource.data (null on a nonexistent doc) — check the id prefix instead,
+    // same reasoning as userSettings below.
+    match /dailyPlans/{planId} {
+      allow read, delete: if isSignedIn() && planId.split('_')[0] == request.auth.uid;
+      allow create, update: if isSignedIn() && planId.split('_')[0] == request.auth.uid && request.resource.data.userId == request.auth.uid;
+    }
+
+    match /dailyReviews/{reviewId} {
+      allow read, delete: if isSignedIn() && reviewId.split('_')[0] == request.auth.uid;
+      allow create, update: if isSignedIn() && reviewId.split('_')[0] == request.auth.uid && request.resource.data.userId == request.auth.uid;
     }
 
     match /growthLogs/{logId} {
