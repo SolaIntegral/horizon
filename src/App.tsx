@@ -7,7 +7,7 @@ import SignupScreen from './screens/SignupScreen'
 import TodayDashboard from './screens/TodayDashboard'
 import InboxScreen from './screens/InboxScreen'
 import DiagnoseScreen from './screens/DiagnoseScreen'
-import CapacityScreen from './screens/CapacityScreen'
+import DailyPlanScreen from './screens/DailyPlanScreen'
 import OverlayScreen from './screens/OverlayScreen'
 import GrowthScreen from './screens/GrowthScreen'
 
@@ -26,7 +26,7 @@ function App() {
               <Route path="/" element={<TodayDashboard />} />
               <Route path="/inbox" element={<InboxScreen />} />
               <Route path="/diagnose/:taskId?" element={<DiagnoseScreen />} />
-              <Route path="/capacity" element={<CapacityScreen />} />
+              <Route path="/plan" element={<DailyPlanScreen />} />
               <Route path="/overlay" element={<OverlayScreen />} />
               <Route path="/overlay/:taskId/:actionId" element={<OverlayScreen />} />
               <Route path="/growth" element={<GrowthScreen />} />

@@ -4,7 +4,7 @@ const navItems = [
   { path: '/', icon: 'today', label: 'Today' },
   { path: '/inbox', icon: 'all_inbox', label: 'Inbox' },
   { path: '/diagnose', icon: 'psychology', label: 'Diagnose' },
-  { path: '/capacity', icon: 'battery_5_bar', label: 'Capacity' },
+  { path: '/plan', icon: 'calendar_month', label: 'Plan' },
   { path: '/growth', icon: 'auto_stories', label: 'Growth' },
 ]
 

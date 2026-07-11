@@ -29,6 +29,27 @@ export function isSameDay(a: Date, b: Date): boolean {
   return a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate()
 }
 
+export function formatDateKey(date: Date): string {
+  const y = date.getFullYear()
+  const m = String(date.getMonth() + 1).padStart(2, '0')
+  const d = String(date.getDate()).padStart(2, '0')
+  return `${y}-${m}-${d}`
+}
+
+export function addDays(date: Date, days: number): Date {
+  const result = new Date(date)
+  result.setDate(result.getDate() + days)
+  return result
+}
+
+// Combines a date's year/month/day with an "HH:mm" time string.
+export function combineDateAndTime(date: Date, hhmm: string): Date {
+  const [hours, minutes] = hhmm.split(':').map(Number)
+  const result = new Date(date)
+  result.setHours(hours || 0, minutes || 0, 0, 0)
+  return result
+}
+
 export function formatRelativeTime(date: Date): string {
   const diffMs = Date.now() - date.getTime()
   const diffMinutes = Math.floor(diffMs / 60000)
