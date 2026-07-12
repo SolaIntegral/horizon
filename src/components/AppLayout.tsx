@@ -1,7 +1,7 @@
 import { Outlet } from 'react-router-dom'
 import Sidebar from './Sidebar'
-import MobileNav from './MobileNav'
 import GlobalFab from './GlobalFab'
+import SettingsMenu from './SettingsMenu'
 
 export default function AppLayout() {
   return (
@@ -10,7 +10,7 @@ export default function AppLayout() {
       <main className="flex-grow flex flex-col h-screen overflow-hidden">
         <Outlet />
       </main>
-      <MobileNav />
+      <SettingsMenu />
       <GlobalFab />
     </div>
   )

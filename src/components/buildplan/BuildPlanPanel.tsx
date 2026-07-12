@@ -9,9 +9,9 @@ import IdeaDetailPanel from './IdeaDetailPanel'
 
 type MainTab = 'roadmap' | 'ideas'
 
-export default function BuildPlanPanel({ onClose }: { onClose: () => void }) {
+export default function BuildPlanPanel({ onClose, initialTab = 'roadmap' }: { onClose: () => void; initialTab?: MainTab }) {
   const { user } = useAuth()
-  const [tab, setTab] = useState<MainTab>('roadmap')
+  const [tab, setTab] = useState<MainTab>(initialTab)
   const [selectedFeatureId, setSelectedFeatureId] = useState<string | null>(null)
   const [selectedIdeaId, setSelectedIdeaId] = useState<string | null>(null)
   const [features, setFeatures] = useState<Feature[]>([])

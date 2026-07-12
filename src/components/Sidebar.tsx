@@ -4,14 +4,10 @@ import { signOut } from 'firebase/auth'
 import { auth } from '../lib/firebase'
 import { useAuth } from '../lib/AuthContext'
 
-const navItems = [
-  { path: '/', icon: 'today', label: 'Today' },
-  { path: '/inbox', icon: 'all_inbox', label: 'Inbox' },
-  { path: '/diagnose', icon: 'psychology', label: 'Diagnose' },
-  { path: '/plan', icon: 'calendar_month', label: 'Plan' },
-  { path: '/overlay', icon: 'timer', label: 'Overlay' },
-  { path: '/growth', icon: 'auto_stories', label: 'Growth' },
-]
+// Only Today stays as a persistent nav item — everything else (Inbox/Diagnose/
+// Plan/Growth/Build Plan) is reached via the Hori menu or the settings-gear
+// menu instead. See Hori_UX改善_設計確定事項.md §9.
+const navItems = [{ path: '/', icon: 'today', label: 'Today' }]
 
 function getInitials(label: string) {
   const parts = label.trim().split(/\s+/)
