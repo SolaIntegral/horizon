@@ -1,44 +1,18 @@
-import { doc, getDoc, onSnapshot, setDoc, serverTimestamp, Timestamp, type Unsubscribe } from 'firebase/firestore'
+import { doc, getDoc, onSnapshot, setDoc, serverTimestamp, type Timestamp, type Unsubscribe } from 'firebase/firestore'
 import { db } from './firebase'
-import type { InterruptionReason } from './workSessions'
-import type { InboxTriage } from './tasks'
 
-// 1日の終わりに作る振り返り。見積り精度・中断理由・未完了Actionの仮置き先を
-// 次の計画・週次振り返りで使うために保存する。
-export interface EstimateDifference {
-  actionId: string
-  title: string
-  estimatedMinutes: number
-  actualMinutes: number
-}
-
-export interface InterruptionSummary {
-  reason: InterruptionReason
-  count: number
-}
-
-export type UnfinishedPlacement = 'tomorrow' | 'within_3_days' | 'unscheduled'
-
-export interface UnfinishedActionPlacement {
-  actionId: string
-  placement: UnfinishedPlacement
-}
-
-export interface InboxTriageSummary {
-  taskId: string
-  triage: InboxTriage | 'deleted'
-}
-
+// 1日の終わりに作る、最小限の振り返り。完了・未完了のActionと、任意の
+// 振り返りコメント／翌日メモだけを持つ（Hori_UX改善_設計確定事項.md §5）。
 export interface DailyReview {
   id: string
   userId: string
   date: string // 'YYYY-MM-DD'
-  plannedMinutes: number
-  actualMinutes: number
-  majorEstimateDifferences: EstimateDifference[]
-  interruptions: InterruptionSummary[]
-  unfinishedActionPlacements: UnfinishedActionPlacement[]
-  inboxTriage: InboxTriageSummary[]
+  completedActionIds: string[]
+  incompleteActionIds: string[]
+  estimateDiffSummary?: string
+  interruptionSummary?: string
+  reflection?: string
+  tomorrowNotes?: string
   createdAt?: Timestamp
   updatedAt?: Timestamp
 }
@@ -71,4 +45,19 @@ export async function upsertDailyReview(
     { userId, date, ...updates, updatedAt: serverTimestamp() },
     { merge: true },
   )
+}
+
+// Saves the (optional, minimal) evening review — used by Today's evening_prompt flow.
+export async function completeDailyReview(
+  userId: string,
+  date: string,
+  input: { completedActionIds: string[]; incompleteActionIds: string[]; reflection?: string; tomorrowNotes?: string },
+) {
+  const updates: Partial<Omit<DailyReview, 'id' | 'userId' | 'date' | 'createdAt'>> = {
+    completedActionIds: input.completedActionIds,
+    incompleteActionIds: input.incompleteActionIds,
+  }
+  if (input.reflection?.trim()) updates.reflection = input.reflection.trim()
+  if (input.tomorrowNotes?.trim()) updates.tomorrowNotes = input.tomorrowNotes.trim()
+  await upsertDailyReview(userId, date, updates)
 }
