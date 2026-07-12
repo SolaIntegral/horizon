@@ -1,14 +1,17 @@
 import { useEffect, useMemo, useState } from 'react'
-import { Link, useSearchParams } from 'react-router-dom'
+import { Link, useNavigate, useSearchParams } from 'react-router-dom'
+import { Timestamp } from 'firebase/firestore'
 import { useAuth } from '../lib/AuthContext'
 import { subscribeActiveActions, subscribeDoneActions, skipAction, overwriteAction, type Action } from '../lib/actions'
 import { subscribeScheduledTasks, type Task } from '../lib/tasks'
 import { subscribeActiveWorkSession, type WorkSession } from '../lib/workSessions'
-import { subscribeDailyPlan, type DailyPlan } from '../lib/dailyPlans'
+import { subscribeDailyPlan, upsertDailyPlan, type DailyPlan } from '../lib/dailyPlans'
+import { completeDailyReview } from '../lib/dailyReviews'
 import { getStatusMessage } from '../lib/statusMessages'
 import { computeDayPhase, selectCurrentMission } from '../lib/dayPhase'
 import { formatDateKey } from '../lib/dateUtils'
 import HelpButton from '../components/HelpButton'
+import MorningSetupForm from '../components/MorningSetupForm'
 
 function isWithinDays(date: Date, days: number): boolean {
   const diffMs = date.getTime() - Date.now()
@@ -28,6 +31,7 @@ function formatTime(d: Date): string {
 
 export default function TodayDashboard() {
   const { user } = useAuth()
+  const navigate = useNavigate()
   const today = useMemo(() => new Date(), [])
   const todayKey = formatDateKey(today)
 
@@ -39,11 +43,17 @@ export default function TodayDashboard() {
   const [searchParams] = useSearchParams()
   const [showLog, setShowLog] = useState(() => searchParams.get('log') === '1')
   const [showDetail, setShowDetail] = useState(false)
+  const [completedBanner, setCompletedBanner] = useState(() => searchParams.get('completed'))
   const [tick, setTick] = useState(0)
 
   const [editing, setEditing] = useState(false)
   const [editTitle, setEditTitle] = useState('')
   const [editMinutes, setEditMinutes] = useState('')
+
+  const [reviewOpen, setReviewOpen] = useState(false)
+  const [reflection, setReflection] = useState('')
+  const [tomorrowNotes, setTomorrowNotes] = useState('')
+  const [savingReview, setSavingReview] = useState(false)
 
   useEffect(() => {
     if (!user) return
@@ -60,6 +70,16 @@ export default function TodayDashboard() {
       unsub5()
     }
   }, [user, todayKey])
+
+  // Query params (?log=1 from the Hori menu, ?completed=... from Overlay's
+  // Done button) are one-shot triggers — strip them from the URL once read
+  // so a refresh doesn't keep re-showing the banner/log.
+  useEffect(() => {
+    if (searchParams.get('log') || searchParams.get('completed')) {
+      navigate('/', { replace: true })
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   useEffect(() => {
     const id = setInterval(() => setTick((t) => t + 1), 60000)
@@ -151,6 +171,27 @@ export default function TodayDashboard() {
     setEditing(false)
   }
 
+  const handleContinueWorking = async () => {
+    if (!user) return
+    await upsertDailyPlan(user.uid, todayKey, { eveningPromptAnswer: 'continue_working' })
+  }
+
+  const handleSaveReview = async () => {
+    if (!user || !dailyPlan) return
+    setSavingReview(true)
+    try {
+      const completedActionIds = dailyPlan.plannedSlots
+        .map((s) => s.actionId)
+        .filter((id) => actionsById.get(id)?.status === 'done')
+      const incompleteActionIds = dailyPlan.plannedSlots.map((s) => s.actionId).filter((id) => !completedActionIds.includes(id))
+      await completeDailyReview(user.uid, todayKey, { completedActionIds, incompleteActionIds, reflection, tomorrowNotes })
+      await upsertDailyPlan(user.uid, todayKey, { dayCompletedAt: Timestamp.now(), eveningPromptAnswer: 'reviewed' })
+      setReviewOpen(false)
+    } finally {
+      setSavingReview(false)
+    }
+  }
+
   const missionLog = useMemo(() => {
     if (!dailyPlan) return []
     return [...dailyPlan.plannedSlots]
@@ -185,30 +226,96 @@ export default function TodayDashboard() {
           <p className="text-lg text-on-surface-variant">{todayLabel}</p>
         </header>
 
-        {dayPhase === 'morning_setup' && (
-          <div className="neumorphic-raised rounded-2xl p-10 bg-surface text-center space-y-4">
-            <span className="material-symbols-outlined text-4xl text-primary/60">wb_twilight</span>
-            <p className="text-lg font-medium text-on-surface">今日の予定がまだありません。</p>
-            <p className="text-sm text-on-surface-variant">Planで今日の予定表を作ると、ここに最初のミッションが表示されます。</p>
-            <Link
-              to="/plan"
-              className="inline-block btn-squish neumorphic-raised bg-primary text-white font-bold py-3 px-8 rounded-full hover:scale-105 active:scale-95 transition-all"
-            >
-              今日の予定を作る
-            </Link>
+        {completedBanner && (
+          <div className="neumorphic-raised rounded-xl p-4 bg-primary/10 border border-primary/20 flex items-center justify-between">
+            <p className="text-sm font-bold text-primary">✓ 「{completedBanner}」を完了しました！</p>
+            <button onClick={() => setCompletedBanner(null)} className="text-primary/60 hover:text-primary">
+              <span className="material-symbols-outlined text-lg">close</span>
+            </button>
           </div>
         )}
 
-        {(dayPhase === 'evening_prompt' || dayPhase === 'day_complete') && (
+        {dayPhase === 'morning_setup' && (
+          <MorningSetupForm activeActions={activeActions} scheduledTasks={scheduledTasks} existingPlan={dailyPlan} onComplete={() => {}} />
+        )}
+
+        {dayPhase === 'evening_prompt' && !reviewOpen && (
+          <div className="neumorphic-raised rounded-2xl p-10 bg-surface text-center space-y-4">
+            <span className="material-symbols-outlined text-4xl text-primary/60">bedtime</span>
+            <p className="text-lg font-medium text-on-surface">今日はもう遅い時間です。今日はどうしますか？</p>
+            <div className="flex flex-col sm:flex-row justify-center gap-3">
+              <button
+                onClick={() => setReviewOpen(true)}
+                className="btn-squish neumorphic-raised bg-primary text-white font-bold py-3 px-6 rounded-full"
+              >
+                今日を振り返る
+              </button>
+              <Link to="/plan" className="btn-squish neumorphic-raised bg-surface text-primary font-bold py-3 px-6 rounded-full">
+                明日の計画を確認する
+              </Link>
+              <button
+                onClick={handleContinueWorking}
+                className="btn-squish neumorphic-raised bg-surface text-on-surface-variant font-bold py-3 px-6 rounded-full"
+              >
+                まだ作業を続ける
+              </button>
+            </div>
+          </div>
+        )}
+
+        {dayPhase === 'evening_prompt' && reviewOpen && (
+          <div className="neumorphic-raised rounded-2xl p-8 bg-surface space-y-4">
+            <h3 className="text-lg font-bold text-on-surface">今日の振り返り</h3>
+            <div className="space-y-2">
+              <label className="text-xs font-bold text-outline">今日気づいたこと・学んだこと（任意）</label>
+              <textarea
+                className="w-full h-20 p-3 text-sm neumorphic-sunken border-none rounded-lg bg-surface resize-none"
+                value={reflection}
+                onChange={(e) => setReflection(e.target.value)}
+              />
+            </div>
+            <div className="space-y-2">
+              <label className="text-xs font-bold text-outline">明日への引き継ぎメモ（任意）</label>
+              <textarea
+                className="w-full h-20 p-3 text-sm neumorphic-sunken border-none rounded-lg bg-surface resize-none"
+                value={tomorrowNotes}
+                onChange={(e) => setTomorrowNotes(e.target.value)}
+              />
+            </div>
+            <div className="flex justify-end gap-3">
+              <button onClick={() => setReviewOpen(false)} className="px-4 py-2 rounded-full text-sm text-on-surface-variant">
+                キャンセル
+              </button>
+              <button
+                onClick={handleSaveReview}
+                disabled={savingReview}
+                className="px-6 py-2 rounded-full text-sm font-bold bg-primary text-white disabled:opacity-50"
+              >
+                {savingReview ? '保存しています…' : '保存して終了'}
+              </button>
+            </div>
+          </div>
+        )}
+
+        {dayPhase === 'day_complete' && (
           <div className="neumorphic-raised rounded-2xl p-10 bg-surface text-center space-y-4">
             <span className="material-symbols-outlined text-4xl text-primary/60">task_alt</span>
-            <p className="text-lg font-medium text-on-surface">今日の予定はすべて完了しました。</p>
-            <p className="text-sm text-on-surface-variant">お疲れさまでした。明日の予定を作るか、少し休みましょう。</p>
+            {dailyPlan?.dayCompletedAt ? (
+              <>
+                <p className="text-lg font-medium text-on-surface">今日はお疲れさまでした。</p>
+                <p className="text-sm text-on-surface-variant">振り返りを保存しました。ゆっくり休んでください。</p>
+              </>
+            ) : (
+              <>
+                <p className="text-lg font-medium text-on-surface">今日の予定はすべて完了しました。</p>
+                <p className="text-sm text-on-surface-variant">お疲れさまでした。予定を追加するか、少し休みましょう。</p>
+              </>
+            )}
             <Link
               to="/plan"
               className="inline-block btn-squish neumorphic-raised bg-primary text-white font-bold py-3 px-8 rounded-full hover:scale-105 active:scale-95 transition-all"
             >
-              明日の予定を作る
+              予定を見直す
             </Link>
           </div>
         )}

@@ -61,11 +61,16 @@ export function computeDayPhase(input: {
   if (!dailyPlan || dailyPlan.plannedSlots.length === 0) return 'morning_setup'
   if (activeSession?.type === 'focus') return 'working'
   if (activeSession?.type === 'break') return 'break'
+  if (dailyPlan.dayCompletedAt) return 'day_complete'
+
+  // Past 23:00 and not yet reviewed/dismissed-for-the-night, the evening
+  // check-in outranks showing the next Mission (§3 priority order) — but
+  // never overrides an active focus/break session above.
+  const isEvening = now.getHours() >= EVENING_HOUR
+  if (isEvening && dailyPlan.eveningPromptAnswer !== 'continue_working') return 'evening_prompt'
 
   const current = selectCurrentMission(dailyPlan, actionsById)
-  if (current) return 'mission_ready'
-
-  return now.getHours() >= EVENING_HOUR ? 'evening_prompt' : 'day_complete'
+  return current ? 'mission_ready' : 'day_complete'
 }
 
 export type BreakOverrunLevel = 'none' | 'light' | 'heavy'

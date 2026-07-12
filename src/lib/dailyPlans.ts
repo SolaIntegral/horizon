@@ -31,6 +31,11 @@ export interface DailyPlan {
   freeTimeSlots: TimeSlot[]
   bufferSlots: TimeSlot[]
   dayEndTime?: Timestamp
+  // 23時以降の終了確認（§3のDayPhase計算で使用）。dayCompletedAtは実際に
+  // 振り返りを終えて1日を締めたことを示す。eveningPromptAnswerは
+  // 「まだ作業を続ける」を選んでその晩は再度催促しない、という軽い記録。
+  eveningPromptAnswer?: 'reviewed' | 'confirmed_tomorrow' | 'continue_working'
+  dayCompletedAt?: Timestamp
   createdAt?: Timestamp
   updatedAt?: Timestamp
 }

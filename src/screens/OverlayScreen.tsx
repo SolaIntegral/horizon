@@ -203,7 +203,7 @@ export default function OverlayScreen() {
     if (sessionId) await completeWorkSession(sessionId, taskId, currentElapsedMinutes(), note ? { trigger: 'done', note } : undefined)
     if (note) processSessionNoteWithAI(sessionId!, note, action.title, actionId)
     await completeAction(actionId)
-    navigate('/')
+    navigate(`/?completed=${encodeURIComponent(action.title)}`)
   }
 
   const performExit = async (note?: {
