@@ -50,6 +50,10 @@ export function combineDateAndTime(date: Date, hhmm: string): Date {
   return result
 }
 
+export function timeToHHMM(d: Date): string {
+  return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
+}
+
 export function formatRelativeTime(date: Date): string {
   const diffMs = Date.now() - date.getTime()
   const diffMinutes = Math.floor(diffMs / 60000)
