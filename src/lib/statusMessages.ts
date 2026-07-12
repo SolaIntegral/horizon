@@ -22,6 +22,10 @@ export interface StatusContext {
 }
 
 const messagePools = {
+  breakOverrunLight: [
+    'そろそろ次のミッションに戻る時間です。',
+    '休憩、いい感じですね。戻る準備を始めましょうか。',
+  ],
   breakOverrun: [
     '休憩は十分取れています。そろそろ軽めのActionから戻りましょう。',
     'いきなり全力でなくて大丈夫です。まずは5分だけ再開しましょう。',
@@ -69,7 +73,8 @@ function pickRandom(pool: string[]): string {
 }
 
 const OVERLOAD_THRESHOLD_MINUTES = 180
-const BREAK_OVERRUN_THRESHOLD_MINUTES = 20
+const BREAK_OVERRUN_LIGHT_THRESHOLD_MINUTES = 10
+const BREAK_OVERRUN_HEAVY_THRESHOLD_MINUTES = 20
 const CONTINUOUS_WORK_THRESHOLD_MINUTES = 60
 const LATE_NIGHT_START_HOUR = 23
 const LATE_NIGHT_END_HOUR = 5
@@ -84,7 +89,8 @@ export function getStatusMessage(ctx: StatusContext): string {
 
   if (ctx.activeSession?.type === 'break') {
     const overrun = ctx.activeSession.elapsedMinutes - ctx.activeSession.plannedMinutes
-    if (overrun >= BREAK_OVERRUN_THRESHOLD_MINUTES) return pickRandom(messagePools.breakOverrun)
+    if (overrun >= BREAK_OVERRUN_HEAVY_THRESHOLD_MINUTES) return pickRandom(messagePools.breakOverrun)
+    if (overrun >= BREAK_OVERRUN_LIGHT_THRESHOLD_MINUTES) return pickRandom(messagePools.breakOverrunLight)
   }
 
   if (ctx.activeSession?.type === 'focus') {
