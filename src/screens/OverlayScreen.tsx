@@ -6,6 +6,7 @@ import {
   completeWorkSession,
   createWorkSession,
   endWorkSession,
+  getActiveSessionForAction,
   getLatestBreakStartSession,
   processSessionNoteWithAI,
   type InterruptionReason,
@@ -69,6 +70,11 @@ export default function OverlayScreen() {
   const [editTitle, setEditTitle] = useState('')
   const [editMinutes, setEditMinutes] = useState('')
   const initRef = useRef(false)
+  // Seconds already elapsed when the current session started/resumed; the
+  // reset effect below reads this instead of always starting from 0, so
+  // resuming into an already-active session (e.g. via Today's "戻る" CTA)
+  // shows the real elapsed time instead of restarting the clock.
+  const initialElapsedRef = useRef(0)
 
   useEffect(() => {
     if (!user || !taskId || !actionId || initRef.current) return
@@ -80,8 +86,18 @@ export default function OverlayScreen() {
         return
       }
       setAction(a)
+
+      const existing = await getActiveSessionForAction(user.uid, actionId)
+      if (existing) {
+        initialElapsedRef.current = Math.max(0, Math.floor((Date.now() - existing.startedAt.toDate().getTime()) / 1000))
+        setSessionId(existing.id)
+        setPhase(existing.type)
+        return
+      }
+
       await startAction(actionId)
       const sid = await createWorkSession(user.uid, 'focus', taskId, actionId, a.estimatedMinutes)
+      initialElapsedRef.current = 0
       setSessionId(sid)
       setPhase('focus')
     })()
@@ -89,7 +105,7 @@ export default function OverlayScreen() {
 
   useEffect(() => {
     if (phase !== 'focus' && phase !== 'break') return
-    setElapsedSeconds(0)
+    setElapsedSeconds(initialElapsedRef.current)
     setPaused(false)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sessionId])
@@ -140,12 +156,14 @@ export default function OverlayScreen() {
     if (sessionId) await completeWorkSession(sessionId, taskId, currentElapsedMinutes(), note ? { trigger: 'break_start', note } : undefined)
     if (note) processSessionNoteWithAI(sessionId!, note, action.title, actionId)
     const sid = await createWorkSession(user.uid, 'break', taskId, actionId, BREAK_PLANNED_MINUTES)
+    initialElapsedRef.current = 0
     setSessionId(sid)
     setPhase('break')
   }
 
   const startNewFocusSession = async () => {
     const sid = await createWorkSession(user.uid, 'focus', taskId, actionId, action.estimatedMinutes)
+    initialElapsedRef.current = 0
     setSessionId(sid)
     setPhase('focus')
   }

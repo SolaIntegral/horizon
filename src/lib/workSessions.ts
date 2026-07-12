@@ -177,6 +177,22 @@ export async function processSessionNoteWithAI(sessionId: string, note: string, 
   }
 }
 
+// Used by Overlay to resume into an already-active session for this action
+// (e.g. reached via Today's "戻る" CTA) instead of creating a duplicate one.
+export async function getActiveSessionForAction(userId: string, actionId: string): Promise<WorkSession | null> {
+  const q = query(
+    collection(db, 'workSessions'),
+    where('userId', '==', userId),
+    where('actionId', '==', actionId),
+    where('status', '==', 'active'),
+    limit(1),
+  )
+  const snap = await getDocs(q)
+  if (snap.empty) return null
+  const d = snap.docs[0]
+  return { id: d.id, ...d.data() } as WorkSession
+}
+
 export function subscribeActiveWorkSession(userId: string, callback: (session: WorkSession | null) => void): Unsubscribe {
   const q = query(collection(db, 'workSessions'), where('userId', '==', userId), where('status', '==', 'active'), limit(1))
   return onSnapshot(
