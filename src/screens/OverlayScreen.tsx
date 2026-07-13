@@ -1,23 +1,27 @@
 import { useEffect, useRef, useState } from 'react'
-import { Link, useNavigate, useParams } from 'react-router-dom'
+import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { useAuth } from '../lib/AuthContext'
 import { completeAction, createAction, getAction, overwriteAction, startAction, type Action } from '../lib/actions'
 import {
   completeWorkSession,
   createWorkSession,
   endWorkSession,
+  extendWorkSession,
   getActiveSessionForAction,
   getLatestBreakStartSession,
   processSessionNoteWithAI,
   type InterruptionReason,
   type SuggestedAction,
 } from '../lib/workSessions'
+import { BREAK_HEAVY_THRESHOLD_MINUTES } from '../lib/dayPhase'
 import HelpButton from '../components/HelpButton'
 
 type Phase = 'loading' | 'focus' | 'break' | 'suggestions' | 'error'
 type NotePromptType = 'done' | 'break_start' | 'exit' | null
 
 const BREAK_PLANNED_MINUTES = 5
+const SHORT_RESTART_MINUTES = 5
+const EARLY_FINISH_RATIO = 0.7 // actualMinutes below this share of the estimate counts as "finished early"
 
 const overlayHelpContent = (
   <>
@@ -53,11 +57,16 @@ function formatClock(totalSeconds: number) {
 export default function OverlayScreen() {
   const { user } = useAuth()
   const { taskId, actionId } = useParams<{ taskId: string; actionId: string }>()
+  const [searchParams] = useSearchParams()
   const navigate = useNavigate()
 
   const [phase, setPhase] = useState<Phase>('loading')
   const [action, setAction] = useState<Action | null>(null)
   const [sessionId, setSessionId] = useState<string | null>(null)
+  // The active session's own planned length — drives the countdown/overtime
+  // check instead of action.estimatedMinutes directly, so a "5分だけ始める"
+  // short-start (§10) counts down from 5 minutes, not the full estimate.
+  const [sessionPlannedMinutes, setSessionPlannedMinutes] = useState(0)
   const [elapsedSeconds, setElapsedSeconds] = useState(0)
   const [paused, setPaused] = useState(false)
   const [notePrompt, setNotePrompt] = useState<NotePromptType>(null)
@@ -69,6 +78,18 @@ export default function OverlayScreen() {
   const [editingAction, setEditingAction] = useState(false)
   const [editTitle, setEditTitle] = useState('')
   const [editMinutes, setEditMinutes] = useState('')
+
+  // Mission overtime check (§11): once per overrun "round" — reset so a
+  // second overrun (e.g. after extending once) can prompt again.
+  const [overtimePrompt, setOvertimePrompt] = useState<null | 'choice' | 'more_time' | 'ongoing' | 'stuck'>(null)
+  const [overtimeShown, setOvertimeShown] = useState(false)
+  const [stuckNote, setStuckNote] = useState('')
+
+  // Break heavy-overrun intervention (§12.2) — shown at most once per break.
+  const [breakIntervention, setBreakIntervention] = useState<null | 'reason' | 'suggestions'>(null)
+  const [breakInterventionShown, setBreakInterventionShown] = useState(false)
+  const [breakReason, setBreakReason] = useState<InterruptionReason | null>(null)
+
   const initRef = useRef(false)
   // Seconds already elapsed when the current session started/resumed; the
   // reset effect below reads this instead of always starting from 0, so
@@ -90,23 +111,29 @@ export default function OverlayScreen() {
       const existing = await getActiveSessionForAction(user.uid, actionId)
       if (existing) {
         initialElapsedRef.current = Math.max(0, Math.floor((Date.now() - existing.startedAt.toDate().getTime()) / 1000))
+        setSessionPlannedMinutes(existing.plannedMinutes)
         setSessionId(existing.id)
         setPhase(existing.type)
         return
       }
 
       await startAction(actionId)
-      const sid = await createWorkSession(user.uid, 'focus', taskId, actionId, a.estimatedMinutes)
+      const plannedMin = searchParams.get('shortStart') === '1' ? Math.min(SHORT_RESTART_MINUTES, a.estimatedMinutes) : a.estimatedMinutes
+      const sid = await createWorkSession(user.uid, 'focus', taskId, actionId, plannedMin)
       initialElapsedRef.current = 0
+      setSessionPlannedMinutes(plannedMin)
       setSessionId(sid)
       setPhase('focus')
     })()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [user, taskId, actionId])
 
   useEffect(() => {
     if (phase !== 'focus' && phase !== 'break') return
     setElapsedSeconds(initialElapsedRef.current)
     setPaused(false)
+    setOvertimeShown(false)
+    setBreakInterventionShown(false)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sessionId])
 
@@ -116,6 +143,27 @@ export default function OverlayScreen() {
     const id = setInterval(() => setElapsedSeconds((s) => s + 1), 1000)
     return () => clearInterval(id)
   }, [phase, paused, sessionId])
+
+  // §11: Mission overtime check — fires once elapsed time reaches this
+  // session's own planned length (not necessarily the action's full estimate
+  // — see sessionPlannedMinutes).
+  useEffect(() => {
+    if (phase !== 'focus' || !action || overtimeShown || paused) return
+    if (elapsedSeconds >= sessionPlannedMinutes * 60) {
+      setOvertimePrompt('choice')
+      setOvertimeShown(true)
+    }
+  }, [phase, action, elapsedSeconds, sessionPlannedMinutes, overtimeShown, paused])
+
+  // §12.2: break heavy-overrun intervention — fires once per break.
+  useEffect(() => {
+    if (phase !== 'break' || breakInterventionShown) return
+    const overrunMinutes = (elapsedSeconds - BREAK_PLANNED_MINUTES * 60) / 60
+    if (overrunMinutes >= BREAK_HEAVY_THRESHOLD_MINUTES) {
+      setBreakIntervention('reason')
+      setBreakInterventionShown(true)
+    }
+  }, [phase, elapsedSeconds, breakInterventionShown])
 
   if (phase === 'loading') {
     return (
@@ -149,6 +197,10 @@ export default function OverlayScreen() {
     if (!editTitle.trim() || !minutes || minutes <= 0) return
     await overwriteAction(actionId, editTitle.trim(), minutes)
     setAction({ ...action, title: editTitle.trim(), estimatedMinutes: minutes })
+    // Only the focus countdown tracks this action's own estimate directly —
+    // editing mid-break just updates what the *next* focus session will plan
+    // for, not the break's own (unrelated) countdown.
+    if (phase === 'focus') setSessionPlannedMinutes(minutes)
     setEditingAction(false)
   }
 
@@ -157,6 +209,7 @@ export default function OverlayScreen() {
     if (note) processSessionNoteWithAI(sessionId!, note, action.title, actionId)
     const sid = await createWorkSession(user.uid, 'break', taskId, actionId, BREAK_PLANNED_MINUTES)
     initialElapsedRef.current = 0
+    setSessionPlannedMinutes(BREAK_PLANNED_MINUTES)
     setSessionId(sid)
     setPhase('break')
   }
@@ -164,6 +217,7 @@ export default function OverlayScreen() {
   const startNewFocusSession = async () => {
     const sid = await createWorkSession(user.uid, 'focus', taskId, actionId, action.estimatedMinutes)
     initialElapsedRef.current = 0
+    setSessionPlannedMinutes(action.estimatedMinutes)
     setSessionId(sid)
     setPhase('focus')
   }
@@ -200,10 +254,12 @@ export default function OverlayScreen() {
   }
 
   const performDone = async (note?: string) => {
-    if (sessionId) await completeWorkSession(sessionId, taskId, currentElapsedMinutes(), note ? { trigger: 'done', note } : undefined)
+    const actualMinutes = currentElapsedMinutes()
+    if (sessionId) await completeWorkSession(sessionId, taskId, actualMinutes, note ? { trigger: 'done', note } : undefined)
     if (note) processSessionNoteWithAI(sessionId!, note, action.title, actionId)
     await completeAction(actionId)
-    navigate(`/?completed=${encodeURIComponent(action.title)}`)
+    const isEarly = actualMinutes >= 1 && actualMinutes < action.estimatedMinutes * EARLY_FINISH_RATIO
+    navigate(`/?completed=${encodeURIComponent(action.title)}${isEarly ? '&early=1' : ''}`)
   }
 
   const performExit = async (note?: {
@@ -259,7 +315,98 @@ export default function OverlayScreen() {
       })
   }
 
-  const plannedSeconds = (phase === 'focus' ? action.estimatedMinutes : BREAK_PLANNED_MINUTES) * 60
+  const closeOvertimePrompt = () => {
+    setOvertimePrompt(null)
+    setStuckNote('')
+  }
+
+  const handleExtendMission = async (minutes: number) => {
+    if (sessionId) await extendWorkSession(sessionId, minutes)
+    const nextMinutes = action.estimatedMinutes + minutes
+    await overwriteAction(actionId, action.title, nextMinutes)
+    setAction({ ...action, estimatedMinutes: nextMinutes })
+    setSessionPlannedMinutes((m) => m + minutes)
+    closeOvertimePrompt()
+    setOvertimeShown(false) // allow a re-prompt if the extension also runs out
+  }
+
+  const handleRecordAndBreakFromOvertime = () => {
+    closeOvertimePrompt()
+    setNotePrompt('break_start')
+  }
+
+  const handleSplitRemaining = async () => {
+    if (sessionId) await endWorkSession(sessionId, taskId, currentElapsedMinutes(), { trigger: 'exit', interruptionReason: 'other' })
+    await createAction(user.uid, taskId, action.taskTitle, `${action.title}（続き）`, 15)
+    closeOvertimePrompt()
+    navigate('/')
+  }
+
+  const handleStuckSplitFirstStep = async () => {
+    await createAction(user.uid, taskId, action.taskTitle, `最初の一歩：${action.title}`, 15)
+    if (sessionId) await endWorkSession(sessionId, taskId, currentElapsedMinutes(), { trigger: 'exit', interruptionReason: 'stuck', note: stuckNote.trim() || undefined })
+    if (stuckNote.trim()) processSessionNoteWithAI(sessionId!, stuckNote.trim(), action.title, actionId)
+    closeOvertimePrompt()
+    navigate('/')
+  }
+
+  const handleStuckNoteAndExit = async () => {
+    if (sessionId) await endWorkSession(sessionId, taskId, currentElapsedMinutes(), { trigger: 'exit', interruptionReason: 'stuck', note: stuckNote.trim() || undefined })
+    if (stuckNote.trim()) processSessionNoteWithAI(sessionId!, stuckNote.trim(), action.title, actionId)
+    closeOvertimePrompt()
+    navigate('/')
+  }
+
+  const handleSwitchMissionFromOvertime = async () => {
+    if (sessionId) await endWorkSession(sessionId, taskId, currentElapsedMinutes(), { trigger: 'exit', interruptionReason: 'other_priority' })
+    closeOvertimePrompt()
+    navigate('/')
+  }
+
+  const closeBreakIntervention = () => {
+    setBreakIntervention(null)
+    setBreakReason(null)
+  }
+
+  const handleBreakReasonSelect = (reason: InterruptionReason) => {
+    setBreakReason(reason)
+    setBreakIntervention('suggestions')
+  }
+
+  const handleExtendBreak = async () => {
+    if (sessionId) await extendWorkSession(sessionId, 10)
+    setSessionPlannedMinutes((m) => m + 10)
+    closeBreakIntervention()
+  }
+
+  const handleShortRestart = async () => {
+    if (sessionId) await completeWorkSession(sessionId, taskId, currentElapsedMinutes())
+    const sid = await createWorkSession(user.uid, 'focus', taskId, actionId, SHORT_RESTART_MINUTES)
+    initialElapsedRef.current = 0
+    setSessionPlannedMinutes(SHORT_RESTART_MINUTES)
+    setSessionId(sid)
+    setPhase('focus')
+    closeBreakIntervention()
+  }
+
+  const handleShrinkMissionFromBreak = () => {
+    closeBreakIntervention()
+    startEditAction()
+  }
+
+  const handleSwitchToLighterMission = async () => {
+    if (sessionId) await endWorkSession(sessionId, taskId, currentElapsedMinutes(), { trigger: 'exit', interruptionReason: breakReason ?? undefined })
+    closeBreakIntervention()
+    navigate('/')
+  }
+
+  const handleReplanFromBreak = async () => {
+    if (sessionId) await endWorkSession(sessionId, taskId, currentElapsedMinutes(), { trigger: 'exit', interruptionReason: breakReason ?? undefined })
+    closeBreakIntervention()
+    navigate('/plan?replan=1')
+  }
+
+  const plannedSeconds = sessionPlannedMinutes * 60
   const remainingSeconds = plannedSeconds - elapsedSeconds
   const isBreakOverrun = phase === 'break' && elapsedSeconds > plannedSeconds
 
@@ -515,6 +662,155 @@ export default function OverlayScreen() {
                 {notePrompt === 'exit' ? 'Save and Exit' : notePrompt === 'break_start' ? 'Save and Break' : 'Save'}
               </button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {overtimePrompt && (
+        <div className="fixed inset-0 bg-black/30 flex items-center justify-center z-50 p-6">
+          <div className="w-full max-w-sm neumorphic-raised bg-surface rounded-xl p-8 space-y-4 max-h-[90vh] overflow-y-auto">
+            {overtimePrompt === 'choice' && (
+              <>
+                <p className="text-sm font-bold text-on-surface">予定時間になりました。今の状況は？</p>
+                <div className="space-y-2">
+                  <button onClick={() => setOvertimePrompt('more_time')} className="w-full py-3 neumorphic-raised rounded-full text-sm font-bold">
+                    もう少しで終わる
+                  </button>
+                  <button onClick={() => setOvertimePrompt('ongoing')} className="w-full py-3 neumorphic-raised rounded-full text-sm font-bold">
+                    まだ途中
+                  </button>
+                  <button onClick={() => setOvertimePrompt('stuck')} className="w-full py-3 neumorphic-raised rounded-full text-sm font-bold">
+                    行き詰まっている
+                  </button>
+                </div>
+                <button onClick={closeOvertimePrompt} className="w-full text-sm font-bold text-on-surface-variant hover:text-primary">
+                  このまま続ける
+                </button>
+              </>
+            )}
+
+            {overtimePrompt === 'more_time' && (
+              <>
+                <p className="text-sm font-bold text-on-surface">あと何分あれば終わりそうですか？</p>
+                <div className="grid grid-cols-4 gap-2">
+                  {[5, 10, 15].map((m) => (
+                    <button key={m} onClick={() => handleExtendMission(m)} className="py-3 neumorphic-raised rounded-full text-sm font-bold">
+                      {m}分
+                    </button>
+                  ))}
+                  <button
+                    onClick={() => handleExtendMission(parseInt(editMinutes, 10) || 15)}
+                    className="py-3 neumorphic-raised rounded-full text-sm font-bold"
+                  >
+                    自由
+                  </button>
+                </div>
+                <button onClick={() => setOvertimePrompt('choice')} className="w-full text-sm font-bold text-on-surface-variant hover:text-primary">
+                  戻る
+                </button>
+              </>
+            )}
+
+            {overtimePrompt === 'ongoing' && (
+              <>
+                <p className="text-sm font-bold text-on-surface">まだ途中なんですね。どうしますか？</p>
+                <div className="space-y-2">
+                  <button onClick={() => setOvertimePrompt('more_time')} className="w-full py-3 neumorphic-raised rounded-full text-sm font-bold">
+                    時間を追加して続ける
+                  </button>
+                  <button onClick={handleRecordAndBreakFromOvertime} className="w-full py-3 neumorphic-raised rounded-full text-sm font-bold">
+                    進捗を記録して休憩する
+                  </button>
+                  <button onClick={handleSplitRemaining} className="w-full py-3 neumorphic-raised rounded-full text-sm font-bold">
+                    残りを新しいMissionへ分ける
+                  </button>
+                </div>
+                <button onClick={() => setOvertimePrompt('choice')} className="w-full text-sm font-bold text-on-surface-variant hover:text-primary">
+                  戻る
+                </button>
+              </>
+            )}
+
+            {overtimePrompt === 'stuck' && (
+              <>
+                <p className="text-sm font-bold text-on-surface">行き詰まったところを、よければ1行だけメモしてください（任意）</p>
+                <textarea
+                  className="w-full p-3 text-sm neumorphic-sunken border-none rounded-lg bg-surface resize-none"
+                  rows={2}
+                  value={stuckNote}
+                  onChange={(e) => setStuckNote(e.target.value)}
+                  placeholder="例：先行研究の探し方が分からない"
+                />
+                <div className="space-y-2">
+                  <button onClick={handleStuckSplitFirstStep} className="w-full py-3 neumorphic-raised rounded-full text-sm font-bold">
+                    最初の一歩へ分割する
+                  </button>
+                  <button onClick={handleSwitchMissionFromOvertime} className="w-full py-3 neumorphic-raised rounded-full text-sm font-bold">
+                    別Missionへ切り替える
+                  </button>
+                  <button onClick={handleRecordAndBreakFromOvertime} className="w-full py-3 neumorphic-raised rounded-full text-sm font-bold">
+                    休憩する
+                  </button>
+                  <button onClick={handleStuckNoteAndExit} className="w-full py-3 neumorphic-raised rounded-full text-sm font-bold text-secondary">
+                    メモを保存して中断する
+                  </button>
+                </div>
+                <button onClick={() => setOvertimePrompt('choice')} className="w-full text-sm font-bold text-on-surface-variant hover:text-primary">
+                  戻る
+                </button>
+              </>
+            )}
+          </div>
+        </div>
+      )}
+
+      {breakIntervention && (
+        <div className="fixed inset-0 bg-black/30 flex items-center justify-center z-50 p-6">
+          <div className="w-full max-w-sm neumorphic-raised bg-surface rounded-xl p-8 space-y-4 max-h-[90vh] overflow-y-auto">
+            {breakIntervention === 'reason' && (
+              <>
+                <p className="text-sm font-bold text-on-surface">休憩が20分を超えました。今の状況は？</p>
+                <div className="flex flex-wrap gap-2">
+                  {(Object.keys(interruptionReasonLabels) as InterruptionReason[]).map((reason) => (
+                    <button
+                      key={reason}
+                      onClick={() => handleBreakReasonSelect(reason)}
+                      className={`px-3 py-1.5 rounded-full text-xs font-bold transition-all ${
+                        breakReason === reason ? 'neumorphic-sunken bg-secondary/10 text-secondary' : 'neumorphic-raised text-on-surface-variant'
+                      }`}
+                    >
+                      {interruptionReasonLabels[reason]}
+                    </button>
+                  ))}
+                </div>
+                <button onClick={closeBreakIntervention} className="w-full text-sm font-bold text-on-surface-variant hover:text-primary">
+                  このまま休憩を続ける
+                </button>
+              </>
+            )}
+
+            {breakIntervention === 'suggestions' && (
+              <>
+                <p className="text-sm font-bold text-on-surface">どうしますか？</p>
+                <div className="space-y-2">
+                  <button onClick={handleExtendBreak} className="w-full py-3 neumorphic-raised rounded-full text-sm font-bold">
+                    休憩を延長する（+10分）
+                  </button>
+                  <button onClick={handleShortRestart} className="w-full py-3 neumorphic-raised rounded-full text-sm font-bold">
+                    5分だけ再開する
+                  </button>
+                  <button onClick={handleShrinkMissionFromBreak} className="w-full py-3 neumorphic-raised rounded-full text-sm font-bold">
+                    Missionを小さくする
+                  </button>
+                  <button onClick={handleSwitchToLighterMission} className="w-full py-3 neumorphic-raised rounded-full text-sm font-bold">
+                    軽いMissionへ変更する
+                  </button>
+                  <button onClick={handleReplanFromBreak} className="w-full py-3 neumorphic-raised rounded-full text-sm font-bold">
+                    残りの予定を組み直す
+                  </button>
+                </div>
+              </>
+            )}
           </div>
         </div>
       )}

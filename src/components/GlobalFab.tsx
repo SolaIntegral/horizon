@@ -45,7 +45,7 @@ export default function GlobalFab() {
     { icon: 'add_task', label: 'タスク追加', onClick: () => navigate('/inbox') },
     { icon: 'lightbulb', label: 'アイデア記録', onClick: () => setIdeaPanelOpen(true) },
     { icon: 'history', label: '今日の記録を見る', onClick: () => navigate('/?log=1') },
-    { icon: 'calendar_month', label: '今日の計画を見直す', onClick: () => navigate('/plan') },
+    { icon: 'calendar_month', label: '今日の計画を見直す', onClick: () => navigate('/plan?replan=1') },
   ]
 
   return (

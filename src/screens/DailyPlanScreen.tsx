@@ -1,14 +1,20 @@
 import { useEffect, useMemo, useState } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import { Timestamp } from 'firebase/firestore'
 import { useAuth } from '../lib/AuthContext'
 import { subscribeScheduledTasks, type Task } from '../lib/tasks'
 import { subscribeActiveActions, setActionDeferredTo, type Action } from '../lib/actions'
-import { subscribeDailyPlan, upsertDailyPlan, type DailyPlan } from '../lib/dailyPlans'
+import { subscribeDailyPlan, upsertDailyPlan, type DailyPlan, type PlannedSlot, type TimeSlot } from '../lib/dailyPlans'
+import { buildDailySchedule, type CandidateAction, type FixedEvent } from '../lib/dailyPlanEngine'
 import { addDays, combineDateAndTime, formatDateKey, timeToHHMM } from '../lib/dateUtils'
 import HelpButton from '../components/HelpButton'
 import MorningSetupForm from '../components/MorningSetupForm'
 
 type DayTab = 'today' | 'tomorrow' | 'plus2'
+
+const REPLAN_FILL_RATIO = 0.75
+
+const replanReasons = ['急な予定が入った', '体調・集中力が変わった', 'Missionを想定より大きかった', '優先度が変わった', '必要な情報が揃っていない', 'その他']
 
 interface TimelineBlock {
   key: string
@@ -48,6 +54,7 @@ function formatTime(d: Date): string {
 
 export default function DailyPlanScreen() {
   const { user } = useAuth()
+  const [searchParams, setSearchParams] = useSearchParams()
   const today = useMemo(() => new Date(), [])
   const todayKey = formatDateKey(today)
   const tomorrowKey = formatDateKey(addDays(today, 1))
@@ -58,6 +65,11 @@ export default function DailyPlanScreen() {
   const [plan, setPlan] = useState<DailyPlan | null>(null)
   const [activeTab, setActiveTab] = useState<DayTab>('today')
   const [editingSetup, setEditingSetup] = useState(false)
+
+  const [replanStep, setReplanStep] = useState<null | 'reason' | 'compare'>(null)
+  const [replanReason, setReplanReason] = useState<string | null>(null)
+  const [replanProposal, setReplanProposal] = useState<{ plannedSlots: PlannedSlot[]; bufferSlots: TimeSlot[] } | null>(null)
+  const [applyingReplan, setApplyingReplan] = useState(false)
 
   useEffect(() => {
     if (!user) return
@@ -75,9 +87,66 @@ export default function DailyPlanScreen() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [user, todayKey])
 
+  // Wait for the plan to actually load before entering the replan reason
+  // step — flipping into it immediately from the URL param risked the user
+  // (or a fast test) clicking a reason before `plan` existed, silently no-op'ing.
+  useEffect(() => {
+    if (searchParams.get('replan') === '1' && plan && !editingSetup && replanStep === null) {
+      setReplanStep('reason')
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [plan, editingSetup])
+
   const actionMap = useMemo(() => new Map(activeActions.map((a) => [a.id, a])), [activeActions])
   const actionTitleOf = (id: string) => actionMap.get(id)?.title ?? '(削除されたAction)'
   const taskMap = useMemo(() => new Map(scheduledTasks.map((t) => [t.id, t])), [scheduledTasks])
+
+  const closeReplan = () => {
+    setReplanStep(null)
+    setReplanReason(null)
+    setReplanProposal(null)
+    if (searchParams.get('replan')) setSearchParams({}, { replace: true })
+  }
+
+  const handleSelectReplanReason = (reason: string) => {
+    if (!plan?.dayEndTime) return
+    setReplanReason(reason)
+
+    const fixedEvents: FixedEvent[] = plan.calendarBusySlots.map((s) => ({ start: s.start.toDate(), end: s.end.toDate(), title: s.title }))
+    const requiredIds = plan.requiredActionIds ?? []
+    const requiredActions: CandidateAction[] = requiredIds
+      .filter((id) => actionMap.has(id))
+      .map((id) => ({ actionId: id, estimatedMinutes: actionMap.get(id)!.estimatedMinutes }))
+    const otherActions: CandidateAction[] = plan.selectedActionIds
+      .filter((id) => actionMap.has(id) && !requiredIds.includes(id))
+      .map((id) => ({ actionId: id, estimatedMinutes: actionMap.get(id)!.estimatedMinutes }))
+
+    const result = buildDailySchedule({
+      dayStart: new Date(),
+      dayEnd: plan.dayEndTime.toDate(),
+      fixedEvents,
+      fillRatio: REPLAN_FILL_RATIO,
+      requiredActions,
+      otherActions,
+    })
+
+    setReplanProposal({
+      plannedSlots: result.plannedSlots.map((p) => ({ actionId: p.actionId, start: Timestamp.fromDate(p.start), end: Timestamp.fromDate(p.end) })),
+      bufferSlots: result.bufferSlots.map((b) => ({ start: Timestamp.fromDate(b.start), end: Timestamp.fromDate(b.end) })),
+    })
+    setReplanStep('compare')
+  }
+
+  const handleApplyReplan = async () => {
+    if (!user || !replanProposal) return
+    setApplyingReplan(true)
+    try {
+      await upsertDailyPlan(user.uid, todayKey, { plannedSlots: replanProposal.plannedSlots, bufferSlots: replanProposal.bufferSlots })
+      closeReplan()
+    } finally {
+      setApplyingReplan(false)
+    }
+  }
 
   const handleChangeBlockStart = async (index: number, newStartHHMM: string) => {
     if (!user || !plan) return
@@ -147,11 +216,12 @@ export default function DailyPlanScreen() {
                 <p>固定予定は、Googleカレンダー連携が入るまでの仮の手入力です。</p>
                 <p>「予定表を作成」を押すと時間割ができます。各Actionの開始時刻の変更・並び替え（↑↓）・「明日に回す」で自由に調整できます。「今日は入りませんでした」に出たActionは、今日の枠には収まらなかったものです。</p>
                 <p>「明日」「3日後まで」タブは締切や「明日に回す」で回したActionの簡易プレビューです。本格的な時間割は当日の朝にあらためて作成してください。</p>
+                <p>Horiメニューの「今日の計画を見直す」からは、理由を選ぶと残り時間だけを組み直した修正案を確認できます（現在の予定と比較してから適用できます）。</p>
               </HelpButton>
             </div>
             <p className="text-lg text-on-surface-variant">{today.toLocaleDateString('ja-JP', { month: 'long', day: 'numeric', weekday: 'short' })}</p>
           </div>
-          {plan && !editingSetup && (
+          {plan && !editingSetup && !replanStep && (
             <button onClick={() => setEditingSetup(true)} className="neumorphic-raised px-4 py-2 rounded-full text-sm font-bold text-primary">
               予定を作り直す
             </button>
@@ -172,6 +242,62 @@ export default function DailyPlanScreen() {
           ))}
         </div>
 
+        {activeTab === 'today' && !editingSetup && replanStep === 'reason' && (
+          <section className="neumorphic-raised p-6 rounded-lg bg-surface space-y-4">
+            <h3 className="text-lg font-bold text-on-surface">計画を見直す理由は？</h3>
+            <div className="flex flex-wrap gap-2">
+              {replanReasons.map((r) => (
+                <button key={r} onClick={() => handleSelectReplanReason(r)} className="px-4 py-2 neumorphic-raised rounded-full text-sm font-bold text-on-surface-variant">
+                  {r}
+                </button>
+              ))}
+            </div>
+            <button onClick={closeReplan} className="text-sm font-bold text-on-surface-variant hover:text-primary">
+              キャンセル
+            </button>
+          </section>
+        )}
+
+        {activeTab === 'today' && !editingSetup && replanStep === 'compare' && replanProposal && plan && (
+          <section className="neumorphic-raised p-6 rounded-lg bg-surface space-y-6">
+            <h3 className="text-lg font-bold text-on-surface">修正案を確認</h3>
+            {replanReason && <p className="text-xs text-outline">理由: {replanReason}</p>}
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+              <div className="space-y-2">
+                <h4 className="text-xs font-bold text-outline uppercase tracking-widest">現在の予定</h4>
+                {[...plan.plannedSlots]
+                  .sort((a, b) => a.start.toMillis() - b.start.toMillis())
+                  .map((s, i) => (
+                    <div key={i} className="neumorphic-sunken rounded-lg p-3 text-sm">
+                      <span className="font-bold text-outline">{formatTime(s.start.toDate())}</span> {actionTitleOf(s.actionId)}
+                    </div>
+                  ))}
+              </div>
+              <div className="space-y-2">
+                <h4 className="text-xs font-bold text-primary uppercase tracking-widest">新しい提案</h4>
+                {replanProposal.plannedSlots.map((s, i) => (
+                  <div key={i} className="neumorphic-raised rounded-lg p-3 text-sm ring-1 ring-primary/20">
+                    <span className="font-bold text-primary">{formatTime(s.start.toDate())}</span> {actionTitleOf(s.actionId)}
+                  </div>
+                ))}
+                {replanProposal.plannedSlots.length === 0 && <p className="text-sm text-outline">残り時間に収まるActionがありません。</p>}
+              </div>
+            </div>
+            <div className="flex justify-end gap-3">
+              <button onClick={closeReplan} className="px-4 py-2 rounded-full text-sm font-bold text-on-surface-variant">
+                やめる
+              </button>
+              <button
+                onClick={handleApplyReplan}
+                disabled={applyingReplan}
+                className="btn-squish neumorphic-raised bg-primary text-white px-6 py-2 rounded-full text-sm font-bold disabled:opacity-50"
+              >
+                {applyingReplan ? '適用しています…' : 'この案を適用する'}
+              </button>
+            </div>
+          </section>
+        )}
+
         {activeTab === 'today' && editingSetup && (
           <MorningSetupForm
             activeActions={activeActions}
@@ -181,7 +307,7 @@ export default function DailyPlanScreen() {
           />
         )}
 
-        {activeTab === 'today' && !editingSetup && plan && (
+        {activeTab === 'today' && !editingSetup && !replanStep && plan && (
           <div className="space-y-6">
             {plan.requiredGoal && (
               <div className="neumorphic-sunken p-5 rounded-lg bg-primary/5 border-l-4 border-primary">

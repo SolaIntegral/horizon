@@ -2,14 +2,14 @@ import { useEffect, useMemo, useState } from 'react'
 import { Link, useNavigate, useSearchParams } from 'react-router-dom'
 import { Timestamp } from 'firebase/firestore'
 import { useAuth } from '../lib/AuthContext'
-import { subscribeActiveActions, subscribeDoneActions, skipAction, overwriteAction, type Action } from '../lib/actions'
+import { subscribeActiveActions, subscribeDoneActions, skipAction, overwriteAction, setActionDeferredTo, type Action } from '../lib/actions'
 import { subscribeScheduledTasks, type Task } from '../lib/tasks'
-import { subscribeActiveWorkSession, type WorkSession } from '../lib/workSessions'
+import { subscribeActiveWorkSession, countInterruptions, type WorkSession } from '../lib/workSessions'
 import { subscribeDailyPlan, upsertDailyPlan, type DailyPlan } from '../lib/dailyPlans'
 import { completeDailyReview } from '../lib/dailyReviews'
 import { getStatusMessage } from '../lib/statusMessages'
 import { computeDayPhase, selectCurrentMission } from '../lib/dayPhase'
-import { formatDateKey } from '../lib/dateUtils'
+import { addDays, formatDateKey } from '../lib/dateUtils'
 import HelpButton from '../components/HelpButton'
 import MorningSetupForm from '../components/MorningSetupForm'
 
@@ -55,6 +55,19 @@ export default function TodayDashboard() {
   const [tomorrowNotes, setTomorrowNotes] = useState('')
   const [savingReview, setSavingReview] = useState(false)
 
+  // §10: Mission-not-started support
+  const [notStartedStep, setNotStartedStep] = useState<null | 'reason'>(null)
+  const [notStartedPendingAction, setNotStartedPendingAction] = useState<null | 'reschedule' | 'switch'>(null)
+  const [notStartedReason, setNotStartedReason] = useState<string | null>(null)
+
+  // §13: early-finish choice
+  const [earlyFinish, setEarlyFinish] = useState(() => searchParams.get('early') === '1')
+
+  // §14.2: proactive replan suggestion, dismissed for the rest of this visit
+  const [replanBannerDismissed, setReplanBannerDismissed] = useState(false)
+
+  const [interruptionCount, setInterruptionCount] = useState(0)
+
   useEffect(() => {
     if (!user) return
     const unsub1 = subscribeActiveActions(user.uid, setActiveActions)
@@ -75,7 +88,7 @@ export default function TodayDashboard() {
   // Done button) are one-shot triggers — strip them from the URL once read
   // so a refresh doesn't keep re-showing the banner/log.
   useEffect(() => {
-    if (searchParams.get('log') || searchParams.get('completed')) {
+    if (searchParams.get('log') || searchParams.get('completed') || searchParams.get('early')) {
       navigate('/', { replace: true })
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -107,6 +120,41 @@ export default function TodayDashboard() {
   const currentActionId = activeSession?.actionId ?? currentMissionSlot?.actionId ?? null
   const currentAction = currentActionId ? actionsById.get(currentActionId) ?? null : null
   const currentSlot = dailyPlan?.plannedSlots.find((s) => s.actionId === currentActionId) ?? null
+
+  const isMissionOverdue =
+    dayPhase === 'mission_ready' && !!currentSlot && new Date() > currentSlot.start.toDate() && !activeSession
+
+  useEffect(() => {
+    if (!user || !currentActionId) {
+      setInterruptionCount(0)
+      return
+    }
+    let cancelled = false
+    countInterruptions(user.uid, currentActionId).then((n) => {
+      if (!cancelled) setInterruptionCount(n)
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [user, currentActionId])
+
+  // §14.2: Hori-initiated proactive replan — if the remaining estimated work
+  // wouldn't fit before today's end time, offer to reflow the schedule.
+  const remainingEstimateMinutes = useMemo(() => {
+    if (!dailyPlan) return 0
+    return dailyPlan.plannedSlots.reduce((sum, s) => {
+      const a = actionsById.get(s.actionId)
+      if (!a || a.status === 'done' || a.status === 'skipped') return sum
+      return sum + a.estimatedMinutes
+    }, 0)
+  }, [dailyPlan, actionsById])
+
+  const scheduleAtRisk = useMemo(() => {
+    if (!dailyPlan?.dayEndTime || remainingEstimateMinutes === 0) return false
+    const projectedEnd = new Date(Date.now() + remainingEstimateMinutes * 60000)
+    return projectedEnd > dailyPlan.dayEndTime.toDate()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [dailyPlan, remainingEstimateMinutes, tick])
 
   const taskIdsWithActiveAction = useMemo(() => new Set(activeActions.map((a) => a.taskId)), [activeActions])
 
@@ -176,6 +224,53 @@ export default function TodayDashboard() {
     await upsertDailyPlan(user.uid, todayKey, { eveningPromptAnswer: 'continue_working' })
   }
 
+  const notStartedReasons = ['疲れている', 'やることが曖昧', '気が乗らない', '別の予定が入った', '必要な情報・返信待ち', 'その他']
+
+  const closeNotStarted = () => {
+    setNotStartedStep(null)
+    setNotStartedPendingAction(null)
+    setNotStartedReason(null)
+  }
+
+  const handleRescheduleMission = async () => {
+    if (!user || !dailyPlan || !currentActionId || !currentSlot) return
+    const durationMs = currentSlot.end.toDate().getTime() - currentSlot.start.toDate().getTime()
+    const newStart = new Date()
+    const newEnd = new Date(newStart.getTime() + durationMs)
+    const nextSlots = dailyPlan.plannedSlots.map((s) =>
+      s.actionId === currentActionId ? { actionId: s.actionId, start: Timestamp.fromDate(newStart), end: Timestamp.fromDate(newEnd) } : s,
+    )
+    await upsertDailyPlan(user.uid, todayKey, { plannedSlots: nextSlots })
+    closeNotStarted()
+  }
+
+  const handleSwitchMissionToday = async () => {
+    if (!user || !dailyPlan || !currentActionId) return
+    const nextSlots = dailyPlan.plannedSlots.filter((s) => s.actionId !== currentActionId)
+    await upsertDailyPlan(user.uid, todayKey, { plannedSlots: nextSlots })
+    await setActionDeferredTo(currentActionId, Timestamp.fromDate(addDays(today, 1)))
+    closeNotStarted()
+  }
+
+  const handleConfirmNotStartedReason = () => {
+    if (notStartedPendingAction === 'reschedule') handleRescheduleMission()
+    else if (notStartedPendingAction === 'switch') handleSwitchMissionToday()
+  }
+
+  const handleBringForwardNext = async () => {
+    if (!user || !dailyPlan) return
+    const next = selectCurrentMission(dailyPlan, actionsById)
+    if (!next) return
+    const durationMs = next.slotEnd.getTime() - next.slotStart.getTime()
+    const newStart = new Date()
+    const newEnd = new Date(newStart.getTime() + durationMs)
+    const nextSlots = dailyPlan.plannedSlots.map((s) =>
+      s.actionId === next.actionId ? { actionId: s.actionId, start: Timestamp.fromDate(newStart), end: Timestamp.fromDate(newEnd) } : s,
+    )
+    await upsertDailyPlan(user.uid, todayKey, { plannedSlots: nextSlots })
+    setEarlyFinish(false)
+  }
+
   const handleSaveReview = async () => {
     if (!user || !dailyPlan) return
     setSavingReview(true)
@@ -227,11 +322,56 @@ export default function TodayDashboard() {
         </header>
 
         {completedBanner && (
-          <div className="neumorphic-raised rounded-xl p-4 bg-primary/10 border border-primary/20 flex items-center justify-between">
-            <p className="text-sm font-bold text-primary">✓ 「{completedBanner}」を完了しました！</p>
-            <button onClick={() => setCompletedBanner(null)} className="text-primary/60 hover:text-primary">
-              <span className="material-symbols-outlined text-lg">close</span>
-            </button>
+          <div className="neumorphic-raised rounded-xl p-4 bg-primary/10 border border-primary/20 space-y-3">
+            <div className="flex items-center justify-between">
+              <p className="text-sm font-bold text-primary">✓ 「{completedBanner}」を完了しました！</p>
+              <button
+                onClick={() => {
+                  setCompletedBanner(null)
+                  setEarlyFinish(false)
+                }}
+                className="text-primary/60 hover:text-primary"
+              >
+                <span className="material-symbols-outlined text-lg">close</span>
+              </button>
+            </div>
+            {earlyFinish && (
+              <div className="flex flex-wrap items-center gap-3">
+                <p className="text-xs text-primary/80">予定より早く終わりました。</p>
+                <button
+                  onClick={() => setEarlyFinish(false)}
+                  className="btn-squish neumorphic-raised bg-surface text-primary px-4 py-1.5 rounded-full text-xs font-bold"
+                >
+                  自由時間にする
+                </button>
+                <button
+                  onClick={handleBringForwardNext}
+                  className="btn-squish neumorphic-raised bg-primary text-white px-4 py-1.5 rounded-full text-xs font-bold"
+                >
+                  次のMissionを前倒しする
+                </button>
+              </div>
+            )}
+          </div>
+        )}
+
+        {scheduleAtRisk && !replanBannerDismissed && (dayPhase === 'working' || dayPhase === 'break' || dayPhase === 'mission_ready') && (
+          <div className="neumorphic-raised rounded-xl p-4 bg-secondary/5 border border-secondary/20 flex flex-wrap items-center justify-between gap-3">
+            <p className="text-sm font-bold text-secondary">このままだと後ろの予定が入らなくなりそうです。残りの計画を見直しますか？</p>
+            <div className="flex gap-2">
+              <button
+                onClick={() => setReplanBannerDismissed(true)}
+                className="text-xs font-bold text-on-surface-variant hover:text-secondary"
+              >
+                変更しない
+              </button>
+              <Link
+                to="/plan?replan=1"
+                className="btn-squish neumorphic-raised bg-secondary text-white px-4 py-1.5 rounded-full text-xs font-bold"
+              >
+                修正案を確認
+              </Link>
+            </div>
           </div>
         )}
 
@@ -374,7 +514,78 @@ export default function TodayDashboard() {
 
             <p className="text-lg font-medium italic text-on-surface-variant">"{statusMessage}"</p>
 
-            {!editing && (
+            {interruptionCount >= 2 && (
+              <div className="neumorphic-sunken rounded-lg p-3 flex flex-wrap items-center justify-between gap-2">
+                <p className="text-xs text-secondary font-bold">このMissionは何度か中断されています。分割してみませんか？</p>
+                <Link to="/plan?replan=1" className="text-xs font-bold text-secondary hover:underline">
+                  計画を見直す
+                </Link>
+              </div>
+            )}
+
+            {!editing && isMissionOverdue && !notStartedStep && (
+              <div className="neumorphic-sunken rounded-xl p-5 space-y-3">
+                <p className="text-sm font-bold text-on-surface">予定していた時間を過ぎています。まず5分だけ始めてみましょう？</p>
+                <div className="flex flex-wrap gap-3">
+                  <Link
+                    to={`/overlay/${currentAction.taskId}/${currentAction.id}?shortStart=1`}
+                    className="btn-squish neumorphic-raised bg-primary text-white font-bold py-3 px-6 rounded-full"
+                  >
+                    5分だけ始める
+                  </Link>
+                  <button
+                    onClick={() => {
+                      setNotStartedPendingAction('reschedule')
+                      setNotStartedStep('reason')
+                    }}
+                    className="btn-squish neumorphic-raised bg-surface text-on-surface-variant font-bold py-3 px-6 rounded-full"
+                  >
+                    予定をずらす
+                  </button>
+                  <button
+                    onClick={() => {
+                      setNotStartedPendingAction('switch')
+                      setNotStartedStep('reason')
+                    }}
+                    className="btn-squish neumorphic-raised bg-surface text-on-surface-variant font-bold py-3 px-6 rounded-full"
+                  >
+                    別のMissionにする
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {!editing && isMissionOverdue && notStartedStep === 'reason' && (
+              <div className="neumorphic-sunken rounded-xl p-5 space-y-3">
+                <p className="text-sm font-bold text-on-surface">よろしければ理由を教えてください（任意）</p>
+                <div className="flex flex-wrap gap-2">
+                  {notStartedReasons.map((r) => (
+                    <button
+                      key={r}
+                      onClick={() => setNotStartedReason(r)}
+                      className={`px-3 py-1.5 rounded-full text-xs font-bold ${
+                        notStartedReason === r ? 'neumorphic-raised bg-secondary/10 text-secondary' : 'neumorphic-raised text-on-surface-variant'
+                      }`}
+                    >
+                      {r}
+                    </button>
+                  ))}
+                </div>
+                <div className="flex gap-3">
+                  <button onClick={closeNotStarted} className="text-sm font-bold text-on-surface-variant hover:text-primary">
+                    やめる
+                  </button>
+                  <button
+                    onClick={handleConfirmNotStartedReason}
+                    className="btn-squish neumorphic-raised bg-primary text-white px-6 py-2 rounded-full text-sm font-bold ml-auto"
+                  >
+                    {notStartedPendingAction === 'reschedule' ? 'この予定にずらす' : '別のMissionにする'}
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {!editing && !isMissionOverdue && (
               <div className="flex flex-wrap items-center gap-4">
                 <Link
                   to={`/overlay/${currentAction.taskId}/${currentAction.id}`}

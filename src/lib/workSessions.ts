@@ -3,6 +3,7 @@ import {
   collection,
   doc,
   getDocs,
+  increment,
   limit,
   onSnapshot,
   orderBy,
@@ -202,6 +203,29 @@ export function subscribeActiveWorkSession(userId: string, callback: (session: W
     },
     (err) => console.error('[subscribeActiveWorkSession]', err.code, err.message),
   )
+}
+
+// Extends the active session's planned length in place (Mission overtime's
+// "もう少しで終わる"/"時間を追加" choices, or break's "休憩を延長する").
+export async function extendWorkSession(sessionId: string, additionalMinutes: number) {
+  await updateDoc(doc(db, 'workSessions', sessionId), {
+    plannedMinutes: increment(additionalMinutes),
+    updatedAt: serverTimestamp(),
+  })
+}
+
+// How many times this action's sessions have ended as interrupted/cancelled
+// (any time, not just today) — used to gently flag "this Mission keeps
+// getting avoided" rather than a strict daily count.
+export async function countInterruptions(userId: string, actionId: string): Promise<number> {
+  const q = query(
+    collection(db, 'workSessions'),
+    where('userId', '==', userId),
+    where('actionId', '==', actionId),
+    where('status', 'in', ['interrupted', 'cancelled']),
+  )
+  const snap = await getDocs(q)
+  return snap.size
 }
 
 export async function getLatestBreakStartSession(userId: string, actionId: string): Promise<WorkSession | null> {
