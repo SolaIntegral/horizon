@@ -9,6 +9,12 @@ export interface TaskPlanInput {
   title: string
   outputGoal: string
   currentState: string
+  // Free-text, newline-separated steps the user already jotted down
+  // themselves — when present, the AI prioritizes formatting/refining these
+  // over inventing its own breakdown from scratch.
+  userDraftSteps?: string
+  // e.g. "今週中" / a formatted date — urgency context only, not parsed.
+  deadlineHint?: string
 }
 
 export interface ActionSuggestion {
@@ -19,6 +25,23 @@ export interface ActionSuggestion {
 
 export interface BreakdownResult {
   actions: ActionSuggestion[]
+}
+
+const ACTION_COUNT_INSTRUCTION =
+  'Propose 1-4 concrete next actions to get from the current state to the desired output (only exceed 4 if genuinely necessary). Never propose a single action estimated over 45 minutes — split it further instead.'
+
+function describeTaskForBreakdown(input: TaskPlanInput & { taskId?: string }): string {
+  const lines = [
+    input.taskId ? `Task ID: "${input.taskId}"` : null,
+    `Task title: "${input.title}"`,
+    `Desired output / done-looks-like (完成イメージ): "${input.outputGoal}"`,
+    `Current state (現在地、どこまで出来ているか): "${input.currentState}"`,
+    input.deadlineHint ? `Deadline context (urgency only, do not invent a date): "${input.deadlineHint}"` : null,
+    input.userDraftSteps
+      ? `The user already jotted down draft steps themselves, one per line — treat these as the primary source. Just refine wording, split any that are too long, add completion criteria and time estimates, and only add genuinely missing steps:\n${input.userDraftSteps}`
+      : null,
+  ].filter(Boolean)
+  return lines.join('\n')
 }
 
 const breakdownModel = getGenerativeModel(ai, {
@@ -44,19 +67,74 @@ const breakdownModel = getGenerativeModel(ai, {
 export async function suggestActionBreakdown(input: TaskPlanInput): Promise<BreakdownResult> {
   const prompt = `You are a productivity coach helping a user break a task down into small, concrete 15-45 minute actions.
 
-Task title: "${input.title}"
-Desired output / done-looks-like (完成イメージ): "${input.outputGoal}"
-Current state (現在地、どこまで出来ているか): "${input.currentState}"
+${describeTaskForBreakdown(input)}
 
-Propose 2-6 concrete next actions to get from the current state to the desired output. For each action:
+${ACTION_COUNT_INSTRUCTION} For each action:
 - title: a short, concrete action title, in the same language as the input
 - estimatedMinutes: a realistic time estimate, generally between 15 and 45 minutes (round to 15/30/45 where sensible)
-- completionCriteria: one short sentence describing exactly what "done" looks like for this action, in the same language as the input
-
-Never propose a single action estimated over 45 minutes — split it further instead.`
+- completionCriteria: one short sentence describing exactly what "done" looks like for this action, in the same language as the input`
 
   const result = await breakdownModel.generateContent(prompt)
   return JSON.parse(result.response.text()) as BreakdownResult
+}
+
+export interface BatchTaskInput extends TaskPlanInput {
+  taskId: string
+}
+
+export interface BatchBreakdownResult {
+  taskId: string
+  actions: ActionSuggestion[]
+}
+
+const batchBreakdownModel = getGenerativeModel(ai, {
+  model: MODEL_ID,
+  generationConfig: {
+    responseMimeType: 'application/json',
+    responseSchema: Schema.object({
+      properties: {
+        tasks: Schema.array({
+          items: Schema.object({
+            properties: {
+              taskId: Schema.string(),
+              actions: Schema.array({
+                items: Schema.object({
+                  properties: {
+                    title: Schema.string(),
+                    estimatedMinutes: Schema.number(),
+                    completionCriteria: Schema.string(),
+                  },
+                }),
+              }),
+            },
+          }),
+        }),
+      },
+    }),
+  },
+})
+
+// Breaks down several tasks in a single request (Inbox's multi-select "選んだ
+// N件を整理する" flow). Defensively falls back to an empty action list for
+// any taskId the model's response omits, rather than losing every task's
+// result if one entry comes back malformed.
+export async function suggestActionBreakdownBatch(inputs: BatchTaskInput[]): Promise<BatchBreakdownResult[]> {
+  const taskSections = inputs.map((input) => `---\n${describeTaskForBreakdown(input)}`).join('\n\n')
+  const prompt = `You are a productivity coach helping a user break down several tasks at once, each into small, concrete 15-45 minute actions.
+
+${taskSections}
+
+For EACH task above: ${ACTION_COUNT_INSTRUCTION}
+- title: a short, concrete action title, in the same language as that task's own input
+- estimatedMinutes: a realistic time estimate, generally between 15 and 45 minutes
+- completionCriteria: one short sentence describing exactly what "done" looks like, in the same language as that task's input
+
+Respond with one entry per task above, echoing back its exact Task ID. Keep the response terse — no extra explanation or reasoning outside the requested fields.`
+
+  const result = await batchBreakdownModel.generateContent(prompt)
+  const parsed = JSON.parse(result.response.text()) as { tasks: BatchBreakdownResult[] }
+  const actionsByTaskId = new Map(parsed.tasks.map((t) => [t.taskId, t.actions]))
+  return inputs.map((input) => ({ taskId: input.taskId, actions: actionsByTaskId.get(input.taskId) ?? [] }))
 }
 
 export interface GrowthMemo {

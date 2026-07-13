@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { Link } from 'react-router-dom'
+import { Link, useNavigate } from 'react-router-dom'
 import { useAuth } from '../lib/AuthContext'
 import { createInboxTask, deleteTask, subscribeInboxTasks, updateTaskText, type Task } from '../lib/tasks'
 import { formatRelativeTime } from '../lib/dateUtils'
@@ -13,7 +13,15 @@ const captureTabs: { id: CaptureTab; label: string }[] = [
   { id: 'quickadd', label: 'Quick Add' },
 ]
 
-function CapturedItem({ task }: { task: Task }) {
+function CapturedItem({
+  task,
+  selected,
+  onToggleSelect,
+}: {
+  task: Task
+  selected: boolean
+  onToggleSelect: () => void
+}) {
   const [menuOpen, setMenuOpen] = useState(false)
   const [editing, setEditing] = useState(false)
   const [editText, setEditText] = useState(task.originalInput)
@@ -61,6 +69,15 @@ function CapturedItem({ task }: { task: Task }) {
 
   return (
     <div className="neumorphic-raised bg-surface rounded-lg p-5 flex items-center gap-4 border-l-4 border-secondary">
+      <button
+        onClick={onToggleSelect}
+        aria-label={selected ? '選択を解除' : '選択する'}
+        className={`w-6 h-6 rounded-md flex items-center justify-center flex-shrink-0 transition-colors ${
+          selected ? 'bg-primary text-white' : 'neumorphic-sunken text-transparent'
+        }`}
+      >
+        <span className="material-symbols-outlined text-base">check</span>
+      </button>
       <div className="w-12 h-12 bg-surface-container-highest rounded-full flex items-center justify-center neumorphic-sunken">
         <span className="material-symbols-outlined text-secondary animate-pulse">hourglass_top</span>
       </div>
@@ -111,12 +128,26 @@ function CapturedItem({ task }: { task: Task }) {
 
 export default function InboxScreen() {
   const { user } = useAuth()
+  const navigate = useNavigate()
   const [text, setText] = useState('')
   const [activeTab, setActiveTab] = useState<CaptureTab>('text')
   const [isRecording, setIsRecording] = useState(false)
   const recognitionRef = useRef<any>(null)
   const [inboxTasks, setInboxTasks] = useState<Task[]>([])
   const [submitting, setSubmitting] = useState(false)
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
+
+  const toggleSelect = (id: string) =>
+    setSelectedIds((prev) => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+
+  const handleBatchDiagnose = () => {
+    navigate('/diagnose-batch', { state: { taskIds: Array.from(selectedIds) } })
+  }
 
   useEffect(() => {
     if (!user) return
@@ -184,7 +215,8 @@ export default function InboxScreen() {
             <HelpButton title="Inboxの使い方">
               <p>思いついたことをそのまま書いて「Add to Inbox」で記録する画面です。判断は後回しにして、まず書き出すことに集中してください。</p>
               <p>複数行入力すると、1行が1タスクとして登録されます（例のとおり「1行につき1タスク」）。</p>
-              <p>記録したタスクは「Captured Today」に並びます。「Diagnose」を押すと、そのタスクをActionへ分割する計画作成画面に進みます。「⋮」から編集・削除もできます。</p>
+              <p>記録したタスクは「Captured Today」に並びます。「Diagnose」を押すと、そのタスク1件だけをActionへ分割する画面に進みます。「⋮」から編集・削除もできます。</p>
+              <p>左のチェックボックスで複数選択すると、「選んだN件を整理する」からまとめて分割できます（一括Diagnose）。</p>
             </HelpButton>
           </div>
         </header>
@@ -243,12 +275,33 @@ export default function InboxScreen() {
 
         <section className="space-y-6">
           <h3 className="text-2xl font-bold text-primary border-b border-outline-variant/30 pb-2">Captured Today</h3>
+
+          {selectedIds.size > 0 && (
+            <div className="flex items-center justify-between neumorphic-raised bg-primary/5 border border-primary/20 rounded-xl p-4">
+              <p className="text-sm font-bold text-primary">{selectedIds.size}件選択中</p>
+              <div className="flex gap-3">
+                <button
+                  onClick={() => setSelectedIds(new Set())}
+                  className="text-sm font-bold text-on-surface-variant hover:text-primary"
+                >
+                  選択を解除
+                </button>
+                <button
+                  onClick={handleBatchDiagnose}
+                  className="btn-squish neumorphic-raised bg-primary text-white px-5 py-2 rounded-full text-sm font-bold"
+                >
+                  選んだ{selectedIds.size}件を整理する
+                </button>
+              </div>
+            </div>
+          )}
+
           <div className="space-y-4">
             {inboxTasks.length === 0 && (
               <p className="text-sm text-on-surface-variant text-center py-8">まだ何も入っていません。</p>
             )}
             {inboxTasks.map((task) => (
-              <CapturedItem key={task.id} task={task} />
+              <CapturedItem key={task.id} task={task} selected={selectedIds.has(task.id)} onToggleSelect={() => toggleSelect(task.id)} />
             ))}
           </div>
         </section>
