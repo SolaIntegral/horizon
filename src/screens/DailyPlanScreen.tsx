@@ -121,9 +121,16 @@ export default function DailyPlanScreen() {
       .filter((id) => actionMap.has(id) && !requiredIds.includes(id))
       .map((id) => ({ actionId: id, estimatedMinutes: actionMap.get(id)!.estimatedMinutes }))
 
+    const replanDayStart = new Date()
+    let replanDayEnd = plan.dayEndTime.toDate()
+    // Same "already past" guard as MorningSetupForm — a stored end time that
+    // was itself created before the earlier fix (or just a very late replan)
+    // should mean "tomorrow", not an empty schedule.
+    if (replanDayEnd <= replanDayStart) replanDayEnd = addDays(replanDayEnd, 1)
+
     const result = buildDailySchedule({
-      dayStart: new Date(),
-      dayEnd: plan.dayEndTime.toDate(),
+      dayStart: replanDayStart,
+      dayEnd: replanDayEnd,
       fixedEvents,
       fillRatio: REPLAN_FILL_RATIO,
       requiredActions,

@@ -5,7 +5,7 @@ import type { Task } from '../lib/tasks'
 import type { Action } from '../lib/actions'
 import { upsertDailyPlan, type DailyPlan, type RequiredGoalCondition, type TimeSlot } from '../lib/dailyPlans'
 import { buildDailySchedule, type CandidateAction, type FixedEvent } from '../lib/dailyPlanEngine'
-import { combineDateAndTime, formatDateKey, timeToHHMM } from '../lib/dateUtils'
+import { addDays, combineDateAndTime, formatDateKey, timeToHHMM } from '../lib/dateUtils'
 
 type Fatigue = 'good' | 'normal' | 'tired'
 
@@ -123,7 +123,12 @@ export default function MorningSetupForm({
     setSaving(true)
     try {
       const dayStart = new Date()
-      const dayEnd = combineDateAndTime(today, dayEndTimeInput)
+      let dayEnd = combineDateAndTime(today, dayEndTimeInput)
+      // A same-day end time that's already passed (e.g. "00:00" typed after
+      // midnight) means "until that time tomorrow", not "already over" —
+      // without this, buildDailySchedule sees dayEnd <= dayStart and silently
+      // produces zero planned slots instead of a real schedule.
+      if (dayEnd <= dayStart) dayEnd = addDays(dayEnd, 1)
       const fixedEvents: FixedEvent[] = fixedEventsDraft
         .filter((f) => f.start && f.end)
         .map((f) => ({ start: combineDateAndTime(today, f.start), end: combineDateAndTime(today, f.end), title: f.title || undefined }))
