@@ -6,7 +6,7 @@ import { subscribeScheduledTasks, type Task } from '../lib/tasks'
 import { subscribeActiveActions, setActionDeferredTo, type Action } from '../lib/actions'
 import { subscribeDailyPlan, upsertDailyPlan, type DailyPlan, type PlannedSlot, type TimeSlot } from '../lib/dailyPlans'
 import { buildDailySchedule, type CandidateAction, type FixedEvent } from '../lib/dailyPlanEngine'
-import { addDays, combineDateAndTime, formatDateKey, timeToHHMM } from '../lib/dateUtils'
+import { addDays, combineDateAndTime, formatDateKey, formatTime, timeToHHMM } from '../lib/dateUtils'
 import HelpButton from '../components/HelpButton'
 import MorningSetupForm from '../components/MorningSetupForm'
 
@@ -46,10 +46,6 @@ function toTimelineBlocks(plan: DailyPlan, actionTitleOf: (id: string) => string
     blocks.push({ key: `buffer-${i}`, start: s.start.toDate(), end: s.end.toDate(), kind: 'buffer', title: 'バッファ' })
   })
   return blocks.sort((a, b) => a.start.getTime() - b.start.getTime())
-}
-
-function formatTime(d: Date): string {
-  return d.toLocaleTimeString('ja-JP', { hour: '2-digit', minute: '2-digit' })
 }
 
 export default function DailyPlanScreen() {

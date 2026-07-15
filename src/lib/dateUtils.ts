@@ -54,6 +54,10 @@ export function timeToHHMM(d: Date): string {
   return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
 }
 
+export function formatTime(d: Date): string {
+  return d.toLocaleTimeString('ja-JP', { hour: '2-digit', minute: '2-digit' })
+}
+
 export function formatRelativeTime(date: Date): string {
   const diffMs = Date.now() - date.getTime()
   const diffMinutes = Math.floor(diffMs / 60000)

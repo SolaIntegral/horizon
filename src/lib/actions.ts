@@ -1,6 +1,7 @@
 import {
   addDoc,
   collection,
+  deleteDoc,
   doc,
   getDoc,
   increment,
@@ -109,10 +110,21 @@ export async function completeAction(actionId: string) {
   })
 }
 
-export async function overwriteAction(actionId: string, title: string, estimatedMinutes: number) {
-  await updateDoc(doc(db, 'actions', actionId), { title, estimatedMinutes, updatedAt: serverTimestamp() })
+export async function overwriteAction(actionId: string, title: string, estimatedMinutes: number, completionCriteria?: string) {
+  const updates: Record<string, unknown> = { title, estimatedMinutes, updatedAt: serverTimestamp() }
+  if (completionCriteria !== undefined) updates.completionCriteria = completionCriteria
+  await updateDoc(doc(db, 'actions', actionId), updates)
 }
 
 export async function setActionDeferredTo(actionId: string, deferredTo: Timestamp | null) {
   await updateDoc(doc(db, 'actions', actionId), { deferredTo, updatedAt: serverTimestamp() })
+}
+
+// Permanent removal (e.g. the AI got it wrong) — distinct from skipAction
+// (deprioritize, keep in history) and setActionDeferredTo (push to another
+// day). Callers are also responsible for pulling actionId out of the current
+// DailyPlan's plannedSlots/selectedActionIds/requiredActionIds if present.
+export async function deleteAction(actionId: string, taskId: string, estimatedMinutes: number) {
+  await deleteDoc(doc(db, 'actions', actionId))
+  await addEstimatedMinutes(taskId, -estimatedMinutes)
 }

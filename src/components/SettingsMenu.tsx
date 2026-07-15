@@ -1,10 +1,12 @@
 import { useState } from 'react'
 import { Link } from 'react-router-dom'
 import BuildPlanPanel from './buildplan/BuildPlanPanel'
+import TodayFixPanel from './TodayFixPanel'
 
 export default function SettingsMenu() {
   const [open, setOpen] = useState(false)
   const [buildPlanOpen, setBuildPlanOpen] = useState(false)
+  const [todayFixOpen, setTodayFixOpen] = useState(false)
 
   return (
     <>
@@ -39,11 +41,22 @@ export default function SettingsMenu() {
               <span className="material-symbols-outlined text-lg">flag</span>
               Build Plan
             </button>
+            <button
+              onClick={() => {
+                setTodayFixOpen(true)
+                setOpen(false)
+              }}
+              className="w-full flex items-center gap-2 text-left px-3 py-2 rounded-lg text-sm font-semibold hover:bg-surface-container-high"
+            >
+              <span className="material-symbols-outlined text-lg">build</span>
+              今日のミッションを修正
+            </button>
           </div>
         )}
       </div>
 
       {buildPlanOpen && <BuildPlanPanel initialTab="roadmap" onClose={() => setBuildPlanOpen(false)} />}
+      {todayFixOpen && <TodayFixPanel onClose={() => setTodayFixOpen(false)} />}
     </>
   )
 }

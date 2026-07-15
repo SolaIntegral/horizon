@@ -4,10 +4,11 @@ import { useAuth } from '../lib/AuthContext'
 import type { Task } from '../lib/tasks'
 import type { Action } from '../lib/actions'
 import { upsertDailyPlan, type DailyPlan, type RequiredGoalCondition, type TimeSlot } from '../lib/dailyPlans'
-import { buildDailySchedule, type CandidateAction, type FixedEvent } from '../lib/dailyPlanEngine'
-import { addDays, combineDateAndTime, formatDateKey, timeToHHMM } from '../lib/dateUtils'
+import { buildDailySchedule, type CandidateAction, type FixedEvent, type PlannedBlock, type BufferBlock } from '../lib/dailyPlanEngine'
+import { addDays, combineDateAndTime, formatDateKey, formatTime, timeToHHMM } from '../lib/dateUtils'
 
 type Fatigue = 'good' | 'normal' | 'tired'
+type Step = 'form' | 'preview'
 
 const fatigueRatio: Record<Fatigue, number> = { good: 0.8, normal: 0.75, tired: 0.5 }
 const fatigueLabel: Record<Fatigue, string> = { good: '良い', normal: '普通', tired: 'しんどい' }
@@ -16,6 +17,32 @@ interface FixedEventDraft {
   title: string
   start: string // HH:mm
   end: string // HH:mm
+}
+
+interface PreviewData {
+  fixedEvents: FixedEvent[]
+  plannedSlots: PlannedBlock[]
+  bufferSlots: BufferBlock[]
+  dayEnd: Date
+  unscheduledActionIds: string[]
+}
+
+interface PreviewBlock {
+  key: string
+  start: Date
+  end: Date
+  kind: 'fixed' | 'action' | 'buffer'
+  title: string
+}
+
+function buildPreviewBlocks(data: PreviewData, actionTitleOf: (id: string) => string): PreviewBlock[] {
+  const blocks: PreviewBlock[] = []
+  data.fixedEvents.forEach((f, i) => blocks.push({ key: `fixed-${i}`, start: f.start, end: f.end, kind: 'fixed', title: f.title || '固定予定' }))
+  data.plannedSlots.forEach((s, i) =>
+    blocks.push({ key: `action-${i}`, start: s.start, end: s.end, kind: 'action', title: actionTitleOf(s.actionId) }),
+  )
+  data.bufferSlots.forEach((b, i) => blocks.push({ key: `buffer-${i}`, start: b.start, end: b.end, kind: 'buffer', title: 'バッファ' }))
+  return blocks.sort((a, b) => a.start.getTime() - b.start.getTime())
 }
 
 // The "今日の予定を作る" wizard — shared by Today (morning_setup phase, no
@@ -46,6 +73,8 @@ export default function MorningSetupForm({
   const [dayEndTimeInput, setDayEndTimeInput] = useState('22:00')
   const [fixedEventsDraft, setFixedEventsDraft] = useState<FixedEventDraft[]>([])
   const [saving, setSaving] = useState(false)
+  const [step, setStep] = useState<Step>('form')
+  const [previewData, setPreviewData] = useState<PreviewData | null>(null)
 
   useEffect(() => {
     if (!existingPlan) return
@@ -118,49 +147,70 @@ export default function MorningSetupForm({
     setFixedEventsDraft((prev) => prev.map((f, idx) => (idx === i ? { ...f, ...patch } : f)))
   const removeFixedEventRow = (i: number) => setFixedEventsDraft((prev) => prev.filter((_, idx) => idx !== i))
 
-  const handleCreatePlan = async () => {
-    if (!user) return
+  // Computes the schedule and shows it for confirmation — nothing is saved
+  // to Firestore until handleConfirmPlan runs.
+  const handleComputePreview = () => {
+    const dayStart = new Date()
+    let dayEnd = combineDateAndTime(today, dayEndTimeInput)
+    // A same-day end time that's already passed (e.g. "00:00" typed after
+    // midnight) means "until that time tomorrow", not "already over" —
+    // without this, buildDailySchedule sees dayEnd <= dayStart and silently
+    // produces zero planned slots instead of a real schedule.
+    if (dayEnd <= dayStart) dayEnd = addDays(dayEnd, 1)
+    const fixedEvents: FixedEvent[] = fixedEventsDraft
+      .filter((f) => f.start && f.end)
+      .map((f) => ({ start: combineDateAndTime(today, f.start), end: combineDateAndTime(today, f.end), title: f.title || undefined }))
+
+    const ratio = fatigueRatio[fatigue]
+    const requiredActions: CandidateAction[] = requiredActionIds.map((id) => ({
+      actionId: id,
+      estimatedMinutes: actionMap.get(id)?.estimatedMinutes ?? 15,
+    }))
+    const otherActionIds = selectedActionIds.filter((id) => !requiredActionIds.includes(id))
+    const otherActions: CandidateAction[] = otherActionIds.map((id) => ({
+      actionId: id,
+      estimatedMinutes: actionMap.get(id)?.estimatedMinutes ?? 15,
+    }))
+
+    const result = buildDailySchedule({ dayStart, dayEnd, fixedEvents, fillRatio: ratio, requiredActions, otherActions })
+
+    setPreviewData({
+      fixedEvents,
+      plannedSlots: result.plannedSlots,
+      bufferSlots: result.bufferSlots,
+      dayEnd,
+      unscheduledActionIds: result.unscheduledActionIds,
+    })
+    setStep('preview')
+  }
+
+  const handleBackToForm = () => {
+    setStep('form')
+    setPreviewData(null)
+  }
+
+  const handleConfirmPlan = async () => {
+    if (!user || !previewData) return
     setSaving(true)
     try {
-      const dayStart = new Date()
-      let dayEnd = combineDateAndTime(today, dayEndTimeInput)
-      // A same-day end time that's already passed (e.g. "00:00" typed after
-      // midnight) means "until that time tomorrow", not "already over" —
-      // without this, buildDailySchedule sees dayEnd <= dayStart and silently
-      // produces zero planned slots instead of a real schedule.
-      if (dayEnd <= dayStart) dayEnd = addDays(dayEnd, 1)
-      const fixedEvents: FixedEvent[] = fixedEventsDraft
-        .filter((f) => f.start && f.end)
-        .map((f) => ({ start: combineDateAndTime(today, f.start), end: combineDateAndTime(today, f.end), title: f.title || undefined }))
-
-      const ratio = fatigueRatio[fatigue]
-      const requiredActions: CandidateAction[] = requiredActionIds.map((id) => ({
-        actionId: id,
-        estimatedMinutes: actionMap.get(id)?.estimatedMinutes ?? 15,
-      }))
-      const otherActionIds = selectedActionIds.filter((id) => !requiredActionIds.includes(id))
-      const otherActions: CandidateAction[] = otherActionIds.map((id) => ({
-        actionId: id,
-        estimatedMinutes: actionMap.get(id)?.estimatedMinutes ?? 15,
-      }))
-
-      const result = buildDailySchedule({ dayStart, dayEnd, fixedEvents, fillRatio: ratio, requiredActions, otherActions })
+      const requiredIds = requiredActionIds
+      const otherActionIds = selectedActionIds.filter((id) => !requiredIds.includes(id))
 
       const updates: Partial<Omit<DailyPlan, 'id' | 'userId' | 'date' | 'createdAt'>> = {
-        requiredActionIds,
-        selectedActionIds: [...requiredActionIds, ...otherActionIds],
-        calendarBusySlots: fixedEvents.map((f) => {
+        requiredActionIds: requiredIds,
+        selectedActionIds: [...requiredIds, ...otherActionIds],
+        calendarBusySlots: previewData.fixedEvents.map((f) => {
           const slot: TimeSlot = { start: Timestamp.fromDate(f.start), end: Timestamp.fromDate(f.end) }
           if (f.title) slot.title = f.title
           return slot
         }),
-        plannedSlots: result.plannedSlots.map((p) => ({ actionId: p.actionId, start: Timestamp.fromDate(p.start), end: Timestamp.fromDate(p.end) })),
+        plannedSlots: previewData.plannedSlots.map((p) => ({ actionId: p.actionId, start: Timestamp.fromDate(p.start), end: Timestamp.fromDate(p.end) })),
         freeTimeSlots: [],
-        bufferSlots: result.bufferSlots.map((b) => ({ start: Timestamp.fromDate(b.start), end: Timestamp.fromDate(b.end) })),
-        dayEndTime: Timestamp.fromDate(dayEnd),
+        bufferSlots: previewData.bufferSlots.map((b) => ({ start: Timestamp.fromDate(b.start), end: Timestamp.fromDate(b.end) })),
+        dayEndTime: Timestamp.fromDate(previewData.dayEnd),
       }
       if (requiredGoalText.trim()) updates.requiredGoal = requiredGoalText.trim()
-      if (requiredActionIds.length > 0) {
+      if (requiredIds.length > 0) {
         updates.requiredGoalCondition = requiredGoalCondition
         if (requiredGoalCondition === 'time_worked') {
           const mins = parseInt(requiredGoalTimeMinutes, 10)
@@ -173,6 +223,75 @@ export default function MorningSetupForm({
     } finally {
       setSaving(false)
     }
+  }
+
+  const actionTitleOf = (id: string) => actionMap.get(id)?.title ?? '(削除されたAction)'
+  const previewBlocks = previewData ? buildPreviewBlocks(previewData, actionTitleOf) : []
+
+  if (step === 'preview' && previewData) {
+    return (
+      <div className="space-y-8">
+        <section className="neumorphic-raised p-6 rounded-lg bg-surface space-y-4">
+          <h3 className="text-xs font-bold text-outline uppercase tracking-widest">今日の予定（確認）</h3>
+          {requiredGoalText.trim() && (
+            <p className="text-sm text-on-surface">
+              <span className="font-bold text-primary">必須目標：</span>
+              {requiredGoalText.trim()}
+            </p>
+          )}
+          <div className="space-y-2">
+            {previewBlocks.map((b) => (
+              <div
+                key={b.key}
+                className={`flex items-center gap-3 p-3 rounded-lg neumorphic-raised ${
+                  b.kind === 'buffer' ? 'opacity-60' : ''
+                }`}
+              >
+                <span className="text-xs font-mono text-outline w-24 shrink-0">
+                  {formatTime(b.start)} 〜 {formatTime(b.end)}
+                </span>
+                <span
+                  className={`material-symbols-outlined text-base ${
+                    b.kind === 'fixed' ? 'text-secondary' : b.kind === 'action' ? 'text-primary' : 'text-outline'
+                  }`}
+                >
+                  {b.kind === 'fixed' ? 'event' : b.kind === 'action' ? 'task_alt' : 'schedule'}
+                </span>
+                <span className="text-sm font-semibold text-on-surface">{b.title}</span>
+              </div>
+            ))}
+            {previewBlocks.length === 0 && <p className="text-sm text-outline">予定できる時間がありませんでした。</p>}
+          </div>
+          {previewData.unscheduledActionIds.length > 0 && (
+            <div className="pt-2 border-t border-outline-variant/20">
+              <p className="text-xs font-bold text-secondary mb-1">時間に収まらなかったAction</p>
+              <ul className="text-sm text-on-surface-variant list-disc list-inside">
+                {previewData.unscheduledActionIds.map((id) => (
+                  <li key={id}>{actionTitleOf(id)}</li>
+                ))}
+              </ul>
+            </div>
+          )}
+        </section>
+
+        <div className="flex gap-3">
+          <button
+            onClick={handleBackToForm}
+            disabled={saving}
+            className="btn-squish flex-1 neumorphic-raised bg-surface text-on-surface-variant py-4 rounded-full font-bold text-lg disabled:opacity-50"
+          >
+            内容を修正する
+          </button>
+          <button
+            onClick={handleConfirmPlan}
+            disabled={saving}
+            className="btn-squish flex-1 neumorphic-raised bg-primary text-on-primary py-4 rounded-full font-bold text-lg disabled:opacity-50"
+          >
+            {saving ? '保存しています…' : 'この予定で始める'}
+          </button>
+        </div>
+      </div>
+    )
   }
 
   return (
@@ -339,11 +458,10 @@ export default function MorningSetupForm({
       </section>
 
       <button
-        onClick={handleCreatePlan}
-        disabled={saving}
-        className="btn-squish w-full neumorphic-raised bg-primary text-on-primary py-4 rounded-full font-bold text-lg disabled:opacity-50"
+        onClick={handleComputePreview}
+        className="btn-squish w-full neumorphic-raised bg-primary text-on-primary py-4 rounded-full font-bold text-lg"
       >
-        {saving ? '予定表を作成しています…' : '予定表を作成'}
+        予定を確認する
       </button>
     </div>
   )
