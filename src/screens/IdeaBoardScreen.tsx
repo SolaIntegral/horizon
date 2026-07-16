@@ -1,13 +1,16 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import type { PointerEvent as ReactPointerEvent } from 'react'
+import type { PointerEvent as ReactPointerEvent, MouseEvent as ReactMouseEvent } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useAuth } from '../lib/AuthContext'
-import { createIdea, deleteIdea, moveIdea, subscribeIdeas, updateIdea, type Idea, type StickyColor } from '../lib/ideas'
+import { createIdea, deleteIdea, moveIdea, subscribeIdeas, updateIdea, type Idea, type IdeaKind, type StickyColor } from '../lib/ideas'
 import { createFeature } from '../lib/features'
 
-const NOTE_W = 144
-const NOTE_H = 144
+const NOTE_DIMENSIONS: Record<IdeaKind, { w: number; h: number }> = {
+  sticky: { w: 144, h: 144 },
+  text: { w: 200, h: 60 },
+}
 const CANVAS_MARGIN = 400
+const OVERLAY_Z = 100000
 
 const colorClasses: Record<StickyColor, string> = {
   yellow: 'bg-amber-200 text-amber-950',
@@ -45,6 +48,8 @@ function StickyNote({
   onDelete: () => void
   onConvert: () => void
 }) {
+  const kind = idea.kind ?? 'sticky'
+  const dims = NOTE_DIMENSIONS[kind]
   const [dragPos, setDragPos] = useState<{ x: number; y: number } | null>(null)
   const [dragging, setDragging] = useState(false)
   const [draftText, setDraftText] = useState(idea.memo)
@@ -100,6 +105,8 @@ function StickyNote({
     setDragPos(null)
   }
 
+  const isSticky = kind === 'sticky'
+
   return (
     <div
       onPointerDown={handlePointerDown}
@@ -110,19 +117,19 @@ function StickyNote({
         position: 'absolute',
         left: x,
         top: y,
-        width: NOTE_W,
-        height: NOTE_H,
+        width: dims.w,
+        height: dims.h,
         zIndex,
         touchAction: 'none',
         transform: editing || dragging ? undefined : `rotate(${idea.rotation ?? 0}deg)`,
       }}
-      className={`p-2 rounded-sm shadow-md flex flex-col select-none ${colorClasses[idea.color] ?? colorClasses.yellow} ${
-        dragging ? 'shadow-xl scale-105' : ''
-      } transition-transform`}
+      className={`p-2 flex flex-col select-none transition-transform ${
+        isSticky ? `rounded-sm shadow-md ${colorClasses[idea.color] ?? colorClasses.yellow}` : 'bg-transparent text-on-surface font-semibold'
+      } ${dragging ? 'shadow-xl scale-105' : ''} ${editing && !isSticky ? 'ring-1 ring-dashed ring-orange-400/60 rounded' : ''}`}
     >
       <div className="flex items-center justify-between -mt-1 -mx-1 mb-0.5">
         {idea.linkedFeatureId ? (
-          <span className="p-1 opacity-60 flex items-center" title="Featureに変換済み">
+          <span className="p-1 opacity-60 flex items-center bg-black/5 rounded-full" title="Featureに変換済み">
             <span className="material-symbols-outlined text-[14px]">check_circle</span>
           </span>
         ) : (
@@ -133,7 +140,7 @@ function StickyNote({
               onConvert()
             }}
             disabled={converting}
-            className="p-1 rounded hover:bg-black/10 active:bg-black/20 disabled:opacity-40"
+            className="p-1 rounded-full bg-black/5 hover:bg-black/10 active:bg-black/20 disabled:opacity-40"
             title="Featureに変換"
           >
             <span className="material-symbols-outlined text-[14px]">arrow_forward</span>
@@ -145,7 +152,7 @@ function StickyNote({
             e.stopPropagation()
             onDelete()
           }}
-          className="p-1 rounded hover:bg-black/10 active:bg-black/20"
+          className="p-1 rounded-full bg-black/5 hover:bg-black/10 active:bg-black/20"
           title="削除"
         >
           <span className="material-symbols-outlined text-[14px]">close</span>
@@ -176,8 +183,8 @@ export default function IdeaBoardScreen() {
   const [editingId, setEditingId] = useState<string | null>(null)
   const [convertingId, setConvertingId] = useState<string | null>(null)
   const [zOrder, setZOrder] = useState<Record<string, number>>({})
+  const [activeTool, setActiveTool] = useState<IdeaKind | null>(null)
   const zCounter = useRef(1)
-  const scrollRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
     if (!user) return
@@ -188,8 +195,9 @@ export default function IdeaBoardScreen() {
     let w = 1200
     let h = 1400
     for (const idea of ideas) {
-      w = Math.max(w, (idea.x ?? 0) + NOTE_W + CANVAS_MARGIN)
-      h = Math.max(h, (idea.y ?? 0) + NOTE_H + CANVAS_MARGIN)
+      const dims = NOTE_DIMENSIONS[idea.kind ?? 'sticky']
+      w = Math.max(w, (idea.x ?? 0) + dims.w + CANVAS_MARGIN)
+      h = Math.max(h, (idea.y ?? 0) + dims.h + CANVAS_MARGIN)
     }
     return { w, h }
   }, [ideas])
@@ -199,13 +207,16 @@ export default function IdeaBoardScreen() {
     setZOrder((prev) => ({ ...prev, [id]: zCounter.current }))
   }
 
-  const handleAdd = async () => {
+  const handlePlace = async (tool: IdeaKind, e: ReactMouseEvent<HTMLDivElement>) => {
     if (!user) return
-    const container = scrollRef.current
-    const jitter = () => Math.round((Math.random() - 0.5) * 60)
-    const x = Math.max(0, (container ? container.scrollLeft + container.clientWidth / 2 : 200) - NOTE_W / 2 + jitter())
-    const y = Math.max(0, (container ? container.scrollTop + container.clientHeight / 2 : 200) - NOTE_H / 2 + jitter())
-    const id = await createIdea(user.uid, '', x, y)
+    const rect = e.currentTarget.getBoundingClientRect()
+    const tapX = e.clientX - rect.left
+    const tapY = e.clientY - rect.top
+    const dims = NOTE_DIMENSIONS[tool]
+    const x = Math.max(0, tapX - dims.w / 2)
+    const y = Math.max(0, tapY - dims.h / 2)
+    setActiveTool(null)
+    const id = await createIdea(user.uid, '', x, y, tool)
     bringToFront(id)
     setEditingId(id)
   }
@@ -261,14 +272,13 @@ export default function IdeaBoardScreen() {
       </div>
 
       <div
-        ref={scrollRef}
         className="flex-1 overflow-auto relative bg-surface-container-low"
         style={{ backgroundImage: 'radial-gradient(circle, rgba(0,0,0,0.08) 1px, transparent 1px)', backgroundSize: '24px 24px' }}
       >
         <div className="relative" style={{ width: canvasSize.w, height: canvasSize.h }}>
-          {ideas.length === 0 && (
+          {ideas.length === 0 && !activeTool && (
             <p className="absolute inset-0 flex items-center justify-center text-sm text-on-surface-variant text-center px-8">
-              右下の + から付箋を追加できます
+              下のツールバーから付箋やテキストを追加できます
             </p>
           )}
           {ideas.map((idea) => (
@@ -286,16 +296,39 @@ export default function IdeaBoardScreen() {
               onConvert={() => handleConvert(idea)}
             />
           ))}
+          {activeTool && (
+            <div className="absolute inset-0 cursor-crosshair" style={{ zIndex: OVERLAY_Z }} onClick={(e) => handlePlace(activeTool, e)} />
+          )}
         </div>
       </div>
 
-      <button
-        onClick={handleAdd}
-        className="fixed bottom-24 left-5 md:bottom-10 md:left-10 w-14 h-14 rounded-full bg-orange-500 text-white shadow-xl flex items-center justify-center hover:scale-110 active:scale-95 transition-all z-20"
-        aria-label="付箋を追加"
-      >
-        <span className="material-symbols-outlined text-3xl">add</span>
-      </button>
+      <div className="fixed bottom-0 inset-x-0 md:left-64 flex flex-col items-center gap-2 pb-6 pt-2 pointer-events-none z-20">
+        {activeTool && (
+          <span className="pointer-events-none px-3 py-1 rounded-full text-xs font-bold bg-orange-500 text-white shadow">
+            配置したい場所をタップ
+          </span>
+        )}
+        <div className="pointer-events-auto flex items-center gap-2 bg-surface rounded-full px-3 py-2 shadow-xl border border-outline-variant/20">
+          <button
+            onClick={() => setActiveTool((t) => (t === 'sticky' ? null : 'sticky'))}
+            className={`flex items-center gap-1.5 px-4 py-2 rounded-full text-sm font-bold transition-colors ${
+              activeTool === 'sticky' ? 'bg-orange-500 text-white' : 'text-on-surface-variant hover:bg-surface-container-high'
+            }`}
+          >
+            <span className="material-symbols-outlined text-lg">sticky_note_2</span>
+            付箋
+          </button>
+          <button
+            onClick={() => setActiveTool((t) => (t === 'text' ? null : 'text'))}
+            className={`flex items-center gap-1.5 px-4 py-2 rounded-full text-sm font-bold transition-colors ${
+              activeTool === 'text' ? 'bg-orange-500 text-white' : 'text-on-surface-variant hover:bg-surface-container-high'
+            }`}
+          >
+            <span className="material-symbols-outlined text-lg">text_fields</span>
+            テキスト
+          </button>
+        </div>
+      </div>
     </div>
   )
 }

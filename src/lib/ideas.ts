@@ -15,6 +15,7 @@ import {
 import { db } from './firebase'
 
 export type StickyColor = 'yellow' | 'pink' | 'blue' | 'green' | 'purple'
+export type IdeaKind = 'sticky' | 'text'
 
 export const STICKY_COLORS: StickyColor[] = ['yellow', 'pink', 'blue', 'green', 'purple']
 
@@ -22,6 +23,7 @@ export interface Idea {
   id: string
   userId: string
   memo: string
+  kind: IdeaKind
   color: StickyColor
   rotation: number
   x: number
@@ -33,12 +35,13 @@ export interface Idea {
 
 const ideasCollection = collection(db, 'ideas')
 
-export async function createIdea(userId: string, memo: string, x: number, y: number): Promise<string> {
+export async function createIdea(userId: string, memo: string, x: number, y: number, kind: IdeaKind = 'sticky'): Promise<string> {
   const color = STICKY_COLORS[Math.floor(Math.random() * STICKY_COLORS.length)]
-  const rotation = Math.round(Math.random() * 6 - 3)
+  const rotation = kind === 'sticky' ? Math.round(Math.random() * 6 - 3) : 0
   const docRef = await addDoc(ideasCollection, {
     userId,
     memo,
+    kind,
     color,
     rotation,
     x,
@@ -50,7 +53,10 @@ export async function createIdea(userId: string, memo: string, x: number, y: num
 }
 
 export function subscribeIdeas(userId: string, callback: (ideas: Idea[]) => void): Unsubscribe {
-  const q = query(ideasCollection, where('userId', '==', userId), orderBy('createdAt', 'asc'))
+  // Direction must match the deployed composite index (userId asc, createdAt desc) —
+  // Firestore rejects queries whose orderBy direction doesn't match, and the failure
+  // only surfaces as a silent onSnapshot error, so new ideas never showed up.
+  const q = query(ideasCollection, where('userId', '==', userId), orderBy('createdAt', 'desc'))
   return onSnapshot(
     q,
     (snap) => callback(snap.docs.map((d) => ({ id: d.id, ...d.data() }) as Idea)),
