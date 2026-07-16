@@ -244,6 +244,7 @@ export default function IdeaBoardScreen() {
 
   const handleConvert = async (idea: Idea) => {
     if (!user || idea.linkedFeatureId) return
+    if (!confirm(`「${deriveFeatureName(idea.memo)}」をFeatureに変換しますか？`)) return
     setConvertingId(idea.id)
     try {
       const featureId = await createFeature(user.uid, {
