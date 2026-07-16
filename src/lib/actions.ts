@@ -6,6 +6,7 @@ import {
   getDoc,
   increment,
   onSnapshot,
+  orderBy,
   query,
   updateDoc,
   serverTimestamp,
@@ -62,7 +63,15 @@ export async function createAction(
 }
 
 export function subscribeActiveActions(userId: string, callback: (actions: Action[]) => void): Unsubscribe {
-  const q = query(collection(db, 'actions'), where('userId', '==', userId), where('status', 'in', ['todo', 'doing']))
+  // orderBy(createdAt) preserves the order Actions were broken down/added in
+  // within a Task — without it, Firestore falls back to document-id order,
+  // which scrambles the intended step sequence in the Today/edit UIs.
+  const q = query(
+    collection(db, 'actions'),
+    where('userId', '==', userId),
+    where('status', 'in', ['todo', 'doing']),
+    orderBy('createdAt', 'asc'),
+  )
   return onSnapshot(
     q,
     (snapshot) => {

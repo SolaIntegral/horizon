@@ -25,6 +25,8 @@ interface PreviewData {
   bufferSlots: BufferBlock[]
   dayEnd: Date
   unscheduledActionIds: string[]
+  requiredActionIds: string[] // in-task order preserved
+  selectedActionIds: string[] // requiredActionIds followed by the rest, in-task order preserved
 }
 
 interface PreviewBlock {
@@ -126,6 +128,14 @@ export default function MorningSetupForm({
 
   const visibleCandidates = showAllCandidates ? rankedCandidates : rankedCandidates.slice(0, 5)
 
+  // Canonical order for persisting/scheduling selected Actions — priority
+  // tier first, then (thanks to the stable sort above and the Firestore
+  // query's createdAt ordering) same-task Actions fall back to the order
+  // they were broken down in, instead of whatever order the user happened
+  // to click them in.
+  const candidateOrderIndex = useMemo(() => new Map(rankedCandidates.map(({ action }, i) => [action.id, i])), [rankedCandidates])
+  const sortByCandidateOrder = (ids: string[]) => [...ids].sort((a, b) => (candidateOrderIndex.get(a) ?? 0) - (candidateOrderIndex.get(b) ?? 0))
+
   const toggleRequired = (actionId: string) => {
     setRequiredActionIds((prev) => {
       if (prev.includes(actionId)) return prev.filter((id) => id !== actionId)
@@ -162,11 +172,15 @@ export default function MorningSetupForm({
       .map((f) => ({ start: combineDateAndTime(today, f.start), end: combineDateAndTime(today, f.end), title: f.title || undefined }))
 
     const ratio = fatigueRatio[fatigue]
-    const requiredActions: CandidateAction[] = requiredActionIds.map((id) => ({
+    // Sort by candidateOrderIndex (not click order) so same-task Actions keep
+    // their intended breakdown sequence regardless of the order they were toggled in.
+    const requiredIds = sortByCandidateOrder(requiredActionIds)
+    const otherActionIds = sortByCandidateOrder(selectedActionIds.filter((id) => !requiredActionIds.includes(id)))
+
+    const requiredActions: CandidateAction[] = requiredIds.map((id) => ({
       actionId: id,
       estimatedMinutes: actionMap.get(id)?.estimatedMinutes ?? 15,
     }))
-    const otherActionIds = selectedActionIds.filter((id) => !requiredActionIds.includes(id))
     const otherActions: CandidateAction[] = otherActionIds.map((id) => ({
       actionId: id,
       estimatedMinutes: actionMap.get(id)?.estimatedMinutes ?? 15,
@@ -180,6 +194,8 @@ export default function MorningSetupForm({
       bufferSlots: result.bufferSlots,
       dayEnd,
       unscheduledActionIds: result.unscheduledActionIds,
+      requiredActionIds: requiredIds,
+      selectedActionIds: [...requiredIds, ...otherActionIds],
     })
     setStep('preview')
   }
@@ -193,12 +209,11 @@ export default function MorningSetupForm({
     if (!user || !previewData) return
     setSaving(true)
     try {
-      const requiredIds = requiredActionIds
-      const otherActionIds = selectedActionIds.filter((id) => !requiredIds.includes(id))
+      const requiredIds = previewData.requiredActionIds
 
       const updates: Partial<Omit<DailyPlan, 'id' | 'userId' | 'date' | 'createdAt'>> = {
         requiredActionIds: requiredIds,
-        selectedActionIds: [...requiredIds, ...otherActionIds],
+        selectedActionIds: previewData.selectedActionIds,
         calendarBusySlots: previewData.fixedEvents.map((f) => {
           const slot: TimeSlot = { start: Timestamp.fromDate(f.start), end: Timestamp.fromDate(f.end) }
           if (f.title) slot.title = f.title
