@@ -118,7 +118,8 @@ function StickyNote({
         left: x,
         top: y,
         width: dims.w,
-        height: dims.h,
+        height: isSticky ? dims.h : undefined,
+        minHeight: isSticky ? undefined : dims.h,
         zIndex,
         touchAction: 'none',
         transform: editing || dragging ? undefined : `rotate(${idea.rotation ?? 0}deg)`,
@@ -127,40 +128,43 @@ function StickyNote({
         isSticky ? `rounded-sm shadow-md ${colorClasses[idea.color] ?? colorClasses.yellow}` : 'bg-transparent text-on-surface font-semibold'
       } ${dragging ? 'shadow-xl scale-105' : ''} ${editing && !isSticky ? 'ring-1 ring-dashed ring-orange-400/60 rounded' : ''}`}
     >
-      <div className="flex items-center justify-between -mt-1 -mx-1 mb-0.5">
-        {idea.linkedFeatureId ? (
-          <span className="p-1 opacity-60 flex items-center bg-black/5 rounded-full" title="Featureに変換済み">
-            <span className="material-symbols-outlined text-[14px]">check_circle</span>
-          </span>
-        ) : (
+      {(isSticky || editing) && (
+        <div className="flex items-center justify-between -mt-1 -mx-1 mb-0.5">
+          {idea.linkedFeatureId ? (
+            <span className="p-1 opacity-60 flex items-center bg-black/5 rounded-full" title="Featureに変換済み">
+              <span className="material-symbols-outlined text-[14px]">check_circle</span>
+            </span>
+          ) : (
+            <button
+              onPointerDown={(e) => e.stopPropagation()}
+              onClick={(e) => {
+                e.stopPropagation()
+                onConvert()
+              }}
+              disabled={converting}
+              className="p-1 rounded-full bg-black/5 hover:bg-black/10 active:bg-black/20 disabled:opacity-40"
+              title="Featureに変換"
+            >
+              <span className="material-symbols-outlined text-[14px]">arrow_forward</span>
+            </button>
+          )}
           <button
             onPointerDown={(e) => e.stopPropagation()}
             onClick={(e) => {
               e.stopPropagation()
-              onConvert()
+              onDelete()
             }}
-            disabled={converting}
-            className="p-1 rounded-full bg-black/5 hover:bg-black/10 active:bg-black/20 disabled:opacity-40"
-            title="Featureに変換"
+            className="p-1 rounded-full bg-black/5 hover:bg-black/10 active:bg-black/20"
+            title="削除"
           >
-            <span className="material-symbols-outlined text-[14px]">arrow_forward</span>
+            <span className="material-symbols-outlined text-[14px]">close</span>
           </button>
-        )}
-        <button
-          onPointerDown={(e) => e.stopPropagation()}
-          onClick={(e) => {
-            e.stopPropagation()
-            onDelete()
-          }}
-          className="p-1 rounded-full bg-black/5 hover:bg-black/10 active:bg-black/20"
-          title="削除"
-        >
-          <span className="material-symbols-outlined text-[14px]">close</span>
-        </button>
-      </div>
+        </div>
+      )}
       {editing ? (
         <textarea
           ref={textareaRef}
+          rows={2}
           value={draftText}
           onChange={(e) => setDraftText(e.target.value)}
           onPointerDown={(e) => e.stopPropagation()}
@@ -168,7 +172,7 @@ function StickyNote({
           className="flex-1 w-full bg-transparent resize-none outline-none text-sm leading-snug"
         />
       ) : (
-        <p className="flex-1 w-full text-sm leading-snug whitespace-pre-wrap overflow-hidden">
+        <p className={`flex-1 w-full text-sm leading-snug whitespace-pre-wrap ${isSticky ? 'overflow-hidden' : ''}`}>
           {idea.memo || <span className="opacity-50">タップして入力…</span>}
         </p>
       )}
