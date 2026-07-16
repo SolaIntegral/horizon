@@ -270,34 +270,3 @@ Respond with:
   return JSON.parse(result.response.text()) as ProcessedNote
 }
 
-export interface IdeaOrganizeResult {
-  suggestion: string
-  options: string[]
-}
-
-const organizeModel = getGenerativeModel(ai, {
-  model: MODEL_ID,
-  generationConfig: {
-    responseMimeType: 'application/json',
-    responseSchema: Schema.object({
-      properties: {
-        suggestion: Schema.string(),
-        options: Schema.array({ items: Schema.string() }),
-      },
-    }),
-  },
-})
-
-export async function organizeIdea(title: string, memo: string): Promise<IdeaOrganizeResult> {
-  const prompt = `You are lightly organizing a raw idea for a solo developer's idea-parking board. Do NOT decide anything for them — just suggest a gentle direction and 2-3 concrete next-step options they could pick from.
-
-Idea title: "${title}"
-Idea memo: "${memo}"
-
-Respond in Japanese with:
-- suggestion: one short sentence suggesting a gentle direction (not a command)
-- options: 2-3 short option labels the user could choose from (e.g. "そのままIdeaに置いておく", "既存機能に紐づける", "Featureとして追加する")`
-
-  const result = await organizeModel.generateContent(prompt)
-  return JSON.parse(result.response.text()) as IdeaOrganizeResult
-}

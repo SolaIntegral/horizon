@@ -55,7 +55,7 @@ export default function SettingsMenu() {
         )}
       </div>
 
-      {buildPlanOpen && <BuildPlanPanel initialTab="roadmap" onClose={() => setBuildPlanOpen(false)} />}
+      {buildPlanOpen && <BuildPlanPanel onClose={() => setBuildPlanOpen(false)} />}
       {todayFixOpen && <TodayFixPanel onClose={() => setTodayFixOpen(false)} />}
     </>
   )

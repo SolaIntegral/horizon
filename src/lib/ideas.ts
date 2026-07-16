@@ -1,6 +1,5 @@
 import {
   addDoc,
-  arrayUnion,
   collection,
   deleteDoc,
   doc,
@@ -15,48 +14,35 @@ import {
 } from 'firebase/firestore'
 import { db } from './firebase'
 
-export type IdeaCategory = 'app_idea' | 'research' | 'design' | 'learning' | 'life_workflow' | 'writing' | 'other'
-export type IdeaStatus = 'raw' | 'growing' | 'maybe_task' | 'converted' | 'archived'
+export type StickyColor = 'yellow' | 'pink' | 'blue' | 'green' | 'purple'
 
-export interface IdeaNote {
-  text: string
-  createdAt: Timestamp
-}
+export const STICKY_COLORS: StickyColor[] = ['yellow', 'pink', 'blue', 'green', 'purple']
 
 export interface Idea {
   id: string
   userId: string
-  title: string
   memo: string
-  category: IdeaCategory
-  status: IdeaStatus
-  tags: string[]
-  pinned: boolean
-  notes: IdeaNote[]
+  color: StickyColor
+  rotation: number
+  x: number
+  y: number
   linkedFeatureId?: string
-  aiSuggestion?: string
-  aiOptions?: string[]
   createdAt?: Timestamp
   updatedAt?: Timestamp
 }
 
 const ideasCollection = collection(db, 'ideas')
 
-export async function createIdea(
-  userId: string,
-  title: string,
-  memo: string,
-  category: IdeaCategory = 'other',
-): Promise<string> {
+export async function createIdea(userId: string, memo: string, x: number, y: number): Promise<string> {
+  const color = STICKY_COLORS[Math.floor(Math.random() * STICKY_COLORS.length)]
+  const rotation = Math.round(Math.random() * 6 - 3)
   const docRef = await addDoc(ideasCollection, {
     userId,
-    title,
     memo,
-    category,
-    status: 'raw' satisfies IdeaStatus,
-    tags: [],
-    pinned: false,
-    notes: [],
+    color,
+    rotation,
+    x,
+    y,
     createdAt: serverTimestamp(),
     updatedAt: serverTimestamp(),
   })
@@ -64,7 +50,7 @@ export async function createIdea(
 }
 
 export function subscribeIdeas(userId: string, callback: (ideas: Idea[]) => void): Unsubscribe {
-  const q = query(ideasCollection, where('userId', '==', userId), orderBy('createdAt', 'desc'))
+  const q = query(ideasCollection, where('userId', '==', userId), orderBy('createdAt', 'asc'))
   return onSnapshot(
     q,
     (snap) => callback(snap.docs.map((d) => ({ id: d.id, ...d.data() }) as Idea)),
@@ -72,21 +58,14 @@ export function subscribeIdeas(userId: string, callback: (ideas: Idea[]) => void
   )
 }
 
-export async function updateIdea(ideaId: string, updates: Partial<Omit<Idea, 'id' | 'userId' | 'notes'>>) {
+export async function updateIdea(ideaId: string, updates: Partial<Omit<Idea, 'id' | 'userId'>>) {
   await updateDoc(doc(db, 'ideas', ideaId), { ...updates, updatedAt: serverTimestamp() })
+}
+
+export async function moveIdea(ideaId: string, x: number, y: number) {
+  await updateDoc(doc(db, 'ideas', ideaId), { x, y, updatedAt: serverTimestamp() })
 }
 
 export async function deleteIdea(ideaId: string) {
   await deleteDoc(doc(db, 'ideas', ideaId))
-}
-
-export async function addIdeaNote(ideaId: string, text: string) {
-  await updateDoc(doc(db, 'ideas', ideaId), {
-    notes: arrayUnion({ text, createdAt: Timestamp.now() }),
-    updatedAt: serverTimestamp(),
-  })
-}
-
-export async function togglePin(ideaId: string, pinned: boolean) {
-  await updateDoc(doc(db, 'ideas', ideaId), { pinned, updatedAt: serverTimestamp() })
 }

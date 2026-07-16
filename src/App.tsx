@@ -11,6 +11,7 @@ import BatchDiagnoseScreen from './screens/BatchDiagnoseScreen'
 import DailyPlanScreen from './screens/DailyPlanScreen'
 import OverlayScreen from './screens/OverlayScreen'
 import GrowthScreen from './screens/GrowthScreen'
+import IdeaBoardScreen from './screens/IdeaBoardScreen'
 
 function App() {
   return (
@@ -32,6 +33,7 @@ function App() {
               <Route path="/overlay" element={<OverlayScreen />} />
               <Route path="/overlay/:taskId/:actionId" element={<OverlayScreen />} />
               <Route path="/growth" element={<GrowthScreen />} />
+              <Route path="/ideas" element={<IdeaBoardScreen />} />
             </Route>
           </Route>
         </Routes>
