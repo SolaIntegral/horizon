@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Timestamp } from 'firebase/firestore'
 import { useAuth } from '../lib/AuthContext'
-import type { Task } from '../lib/tasks'
+import { isTaskBlocked, type Task } from '../lib/tasks'
 import type { Action } from '../lib/actions'
 import { upsertDailyPlan, type DailyPlan, type RequiredGoalCondition, type TimeSlot } from '../lib/dailyPlans'
 import { buildDailySchedule, type CandidateAction, type FixedEvent, type PlannedBlock, type BufferBlock } from '../lib/dailyPlanEngine'
@@ -99,9 +99,14 @@ export default function MorningSetupForm({
 
   const taskMap = useMemo(() => new Map(scheduledTasks.map((t) => [t.id, t])), [scheduledTasks])
   const actionMap = useMemo(() => new Map(activeActions.map((a) => [a.id, a])), [activeActions])
+  const scheduledTaskIds = useMemo(() => new Set(scheduledTasks.map((t) => t.id)), [scheduledTasks])
 
   const rankedCandidates = useMemo(() => {
     return activeActions
+      .filter((a) => {
+        const task = taskMap.get(a.taskId)
+        return !task || !isTaskBlocked(task, scheduledTaskIds)
+      })
       .map((a) => {
         const task = taskMap.get(a.taskId)
         let reason = 'その他'
@@ -124,7 +129,7 @@ export default function MorningSetupForm({
         return { action: a, reason, priority }
       })
       .sort((a, b) => a.priority - b.priority)
-  }, [activeActions, taskMap])
+  }, [activeActions, taskMap, scheduledTaskIds])
 
   const visibleCandidates = showAllCandidates ? rankedCandidates : rankedCandidates.slice(0, 5)
 

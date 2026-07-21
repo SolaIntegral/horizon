@@ -36,9 +36,22 @@ export interface Task {
   actualTotalMinutes?: number // 全WorkSessionの実績合計（非正規化キャッシュ）
   isMain?: boolean
   skipCount?: number
+  // Set on an auto-created follow-up Task (5th+ Actions overflowing the
+  // per-task cap) — this Task's Actions shouldn't be offered as today's
+  // candidates until the referenced Task is done, since they were only
+  // split out for cap reasons and are still meant to run after it.
+  blockedByTaskId?: string
   createdAt?: Timestamp
   updatedAt?: Timestamp
   completedAt?: Timestamp | null
+}
+
+// True while task.blockedByTaskId still points at a not-yet-done Task.
+// scheduledTaskIds should be the ids of subscribeScheduledTasks' current
+// result (planned/in_progress/interrupted) — once the blocking Task is done
+// (or deleted), it drops out of that set and this returns false.
+export function isTaskBlocked(task: Task, scheduledTaskIds: Set<string>): boolean {
+  return !!task.blockedByTaskId && scheduledTaskIds.has(task.blockedByTaskId)
 }
 
 const tasksCollection = collection(db, 'tasks')
@@ -99,6 +112,7 @@ export interface TaskPlan {
   outputGoal: string
   currentState: string
   deadline?: Timestamp | null
+  blockedByTaskId?: string
 }
 
 // Saves the 完成イメージ・現在地・締切 captured during the planning step and
@@ -126,10 +140,20 @@ export async function createPlannedTask(userId: string, originalInput: string, p
     deadline: plan.deadline ?? null,
     status: 'planned' satisfies TaskStatus,
     skipCount: 0,
+    ...(plan.blockedByTaskId ? { blockedByTaskId: plan.blockedByTaskId } : {}),
     createdAt: serverTimestamp(),
     updatedAt: serverTimestamp(),
   })
   return docRef.id
+}
+
+// Creates the auto-split "続き" Task for Actions overflowing the per-task
+// cap — inherits the original Task's goal/state/deadline since it's the
+// same underlying goal, just continued, and is blocked until the original
+// Task is done (see isTaskBlocked).
+export async function createFollowUpTask(userId: string, originalTaskId: string, plan: Omit<TaskPlan, 'blockedByTaskId'>): Promise<string> {
+  const followUpTitle = `${plan.title}（続き）`
+  return createPlannedTask(userId, followUpTitle, { ...plan, title: followUpTitle, blockedByTaskId: originalTaskId })
 }
 
 export async function setInboxTriage(taskId: string, triage: InboxTriage) {

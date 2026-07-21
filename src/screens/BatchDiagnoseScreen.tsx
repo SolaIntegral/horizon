@@ -2,10 +2,11 @@ import { useEffect, useState } from 'react'
 import { useLocation, useNavigate } from 'react-router-dom'
 import { Timestamp } from 'firebase/firestore'
 import { useAuth } from '../lib/AuthContext'
-import { getTask, savePlan, type Task } from '../lib/tasks'
+import { createFollowUpTask, getTask, savePlan, type Task } from '../lib/tasks'
 import { createAction } from '../lib/actions'
 import { suggestActionBreakdown, suggestActionBreakdownBatch, type ActionSuggestion, type BatchTaskInput } from '../lib/ai'
 import { getEndOfWeek, formatDateKey } from '../lib/dateUtils'
+import { ACTIONS_PER_TASK_CAP, splitOverflowActions } from '../lib/actionSplit'
 import HelpButton from '../components/HelpButton'
 
 type Phase = 'loading' | 'input' | 'reviewing' | 'empty'
@@ -159,19 +160,37 @@ export default function BatchDiagnoseScreen() {
     }
   }
 
-  const confirmTask = async (taskId: string) => {
+  const [splitConfirmTaskId, setSplitConfirmTaskId] = useState<string | null>(null)
+  const [bulkSplitConfirmPending, setBulkSplitConfirmPending] = useState(false)
+
+  const confirmTask = async (taskId: string, skipSplitCheck = false) => {
     if (!user) return
     const input = inputs.find((i) => i.taskId === taskId)
     const review = reviews.find((r) => r.taskId === taskId)
     if (!input || !review || review.actions.length === 0) return
+    if (!skipSplitCheck && review.actions.length > ACTIONS_PER_TASK_CAP) {
+      setSplitConfirmTaskId(taskId)
+      return
+    }
     setReviews((prev) => prev.map((r) => (r.taskId === taskId ? { ...r, busy: true } : r)))
     try {
+      const { primary, overflow } = splitOverflowActions(review.actions)
       const deadline = input.deadlineInput ? Timestamp.fromDate(new Date(`${input.deadlineInput}T23:59:59`)) : null
-      await savePlan(taskId, { title: input.title, outputGoal: input.outputGoal.trim(), currentState: input.currentState.trim(), deadline })
-      for (const action of review.actions) {
+      const plan = { title: input.title, outputGoal: input.outputGoal.trim(), currentState: input.currentState.trim(), deadline }
+      await savePlan(taskId, plan)
+      for (const action of primary) {
         await createAction(user.uid, taskId, input.title, action.title, action.estimatedMinutes, {
           completionCriteria: action.completionCriteria,
         })
+      }
+      if (overflow.length > 0) {
+        const followUpTaskId = await createFollowUpTask(user.uid, taskId, plan)
+        const followUpTitle = `${input.title}（続き）`
+        for (const action of overflow) {
+          await createAction(user.uid, followUpTaskId, followUpTitle, action.title, action.estimatedMinutes, {
+            completionCriteria: action.completionCriteria,
+          })
+        }
       }
       setReviews((prev) => prev.map((r) => (r.taskId === taskId ? { ...r, status: 'confirmed', busy: false } : r)))
     } catch {
@@ -179,15 +198,23 @@ export default function BatchDiagnoseScreen() {
     }
   }
 
+  const pendingReviews = () => reviews.filter((r) => r.status === 'pending' && r.actions.length > 0)
+
   const confirmAllPending = async () => {
-    const pendingIds = reviews.filter((r) => r.status === 'pending' && r.actions.length > 0).map((r) => r.taskId)
-    for (const id of pendingIds) {
-      await confirmTask(id)
+    const pending = pendingReviews()
+    if (pending.some((r) => r.actions.length > ACTIONS_PER_TASK_CAP) && !bulkSplitConfirmPending) {
+      setBulkSplitConfirmPending(true)
+      return
+    }
+    setBulkSplitConfirmPending(false)
+    for (const r of pending) {
+      await confirmTask(r.taskId, true)
     }
     navigate('/')
   }
 
   const pendingCount = reviews.filter((r) => r.status === 'pending' && r.actions.length > 0).length
+  const overflowTasksInBulk = pendingReviews().filter((r) => r.actions.length > ACTIONS_PER_TASK_CAP)
 
   if (phase === 'empty') {
     return (
@@ -383,6 +410,66 @@ export default function BatchDiagnoseScreen() {
           </div>
         )}
       </div>
+
+      {splitConfirmTaskId &&
+        (() => {
+          const review = reviews.find((r) => r.taskId === splitConfirmTaskId)
+          if (!review) return null
+          return (
+            <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-6">
+              <div className="neumorphic-raised bg-surface rounded-xl p-6 max-w-sm space-y-4">
+                <h3 className="text-lg font-bold text-on-surface">Actionが{ACTIONS_PER_TASK_CAP}件を超えています</h3>
+                <p className="text-sm text-on-surface-variant">
+                  「{review.title}」の{ACTIONS_PER_TASK_CAP + 1}件目以降（{review.actions.length - ACTIONS_PER_TASK_CAP}件）は「{review.title}（続き）」として新しいタスクに分けて登録します。元のタスクが完了するまで、そちらは今日の候補には表示されません。
+                </p>
+                <div className="flex justify-end gap-3">
+                  <button onClick={() => setSplitConfirmTaskId(null)} className="px-4 py-2 rounded-full text-sm font-bold text-on-surface-variant">
+                    やめる
+                  </button>
+                  <button
+                    onClick={() => {
+                      const taskId = splitConfirmTaskId
+                      setSplitConfirmTaskId(null)
+                      void confirmTask(taskId, true)
+                    }}
+                    className="btn-squish neumorphic-raised bg-primary text-white px-6 py-2 rounded-full text-sm font-bold"
+                  >
+                    分けて登録する
+                  </button>
+                </div>
+              </div>
+            </div>
+          )
+        })()}
+
+      {bulkSplitConfirmPending && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-6">
+          <div className="neumorphic-raised bg-surface rounded-xl p-6 max-w-sm space-y-4">
+            <h3 className="text-lg font-bold text-on-surface">Actionが{ACTIONS_PER_TASK_CAP}件を超えるタスクがあります</h3>
+            <p className="text-sm text-on-surface-variant">
+              次のタスクは{ACTIONS_PER_TASK_CAP + 1}件目以降を「（続き）」タスクに分けて登録します。元のタスクが完了するまで、そちらは今日の候補には表示されません。
+            </p>
+            <ul className="text-sm text-on-surface list-disc list-inside">
+              {overflowTasksInBulk.map((r) => (
+                <li key={r.taskId}>
+                  {r.title}（{r.actions.length}件 → {ACTIONS_PER_TASK_CAP}件 + 続き{r.actions.length - ACTIONS_PER_TASK_CAP}件）
+                </li>
+              ))}
+            </ul>
+            <div className="flex justify-end gap-3">
+              <button onClick={() => setBulkSplitConfirmPending(false)} className="px-4 py-2 rounded-full text-sm font-bold text-on-surface-variant">
+                やめる
+              </button>
+              <button
+                onClick={confirmAllPending}
+                className="btn-squish neumorphic-raised bg-primary text-white px-6 py-2 rounded-full text-sm font-bold"
+              >
+                分けて登録する
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

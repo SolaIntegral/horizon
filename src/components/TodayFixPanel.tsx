@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { Timestamp } from 'firebase/firestore'
 import { useAuth } from '../lib/AuthContext'
 import { subscribeActiveActions, createAction, overwriteAction, deleteAction, type Action } from '../lib/actions'
-import { subscribeScheduledTasks, type Task } from '../lib/tasks'
+import { subscribeScheduledTasks, isTaskBlocked, type Task } from '../lib/tasks'
 import { subscribeDailyPlan, upsertDailyPlan, type DailyPlan } from '../lib/dailyPlans'
 import { formatDateKey } from '../lib/dateUtils'
 
@@ -35,6 +35,14 @@ export default function TodayFixPanel({ onClose }: { onClose: () => void }) {
     if (!dailyPlan) return []
     return dailyPlan.selectedActionIds.map((id) => actionMap.get(id)).filter((a): a is Action => !!a)
   }, [dailyPlan, actionMap])
+
+  const scheduledTaskIds = useMemo(() => new Set(scheduledTasks.map((t) => t.id)), [scheduledTasks])
+  // Blocked follow-up Tasks ("続き") shouldn't be selectable here either —
+  // same rule as MorningSetupForm's candidate list.
+  const selectableTasks = useMemo(
+    () => scheduledTasks.filter((t) => !isTaskBlocked(t, scheduledTaskIds)),
+    [scheduledTasks, scheduledTaskIds],
+  )
 
   const [editingId, setEditingId] = useState<string | null>(null)
   const [editTitle, setEditTitle] = useState('')
@@ -76,7 +84,7 @@ export default function TodayFixPanel({ onClose }: { onClose: () => void }) {
 
   const startAddNew = () => {
     setAddingNew(true)
-    setNewTaskId(scheduledTasks[0]?.id ?? '')
+    setNewTaskId(selectableTasks[0]?.id ?? '')
     setNewTitle('')
     setNewCriteria('')
     setNewMinutes('30')
@@ -84,7 +92,7 @@ export default function TodayFixPanel({ onClose }: { onClose: () => void }) {
 
   const handleAddNew = async () => {
     if (!user || !newTitle.trim() || !newTaskId) return
-    const task = scheduledTasks.find((t) => t.id === newTaskId)
+    const task = selectableTasks.find((t) => t.id === newTaskId)
     if (!task) return
     const minutes = parseInt(newMinutes, 10) || 30
     const newActionId = await createAction(user.uid, newTaskId, task.title, newTitle.trim(), minutes, {
@@ -188,7 +196,7 @@ export default function TodayFixPanel({ onClose }: { onClose: () => void }) {
           {!addingNew ? (
             <button
               onClick={startAddNew}
-              disabled={scheduledTasks.length === 0}
+              disabled={selectableTasks.length === 0}
               className="w-full py-3 neumorphic-raised rounded-full text-sm font-bold text-primary disabled:opacity-40"
             >
               + 手動でActionを追加
@@ -201,7 +209,7 @@ export default function TodayFixPanel({ onClose }: { onClose: () => void }) {
                 value={newTaskId}
                 onChange={(e) => setNewTaskId(e.target.value)}
               >
-                {scheduledTasks.map((t) => (
+                {selectableTasks.map((t) => (
                   <option key={t.id} value={t.id}>
                     {t.title || t.originalInput}
                   </option>

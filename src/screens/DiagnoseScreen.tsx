@@ -4,7 +4,8 @@ import { Timestamp } from 'firebase/firestore'
 import { useAuth } from '../lib/AuthContext'
 import { suggestActionBreakdown, type ActionSuggestion } from '../lib/ai'
 import { createAction } from '../lib/actions'
-import { createPlannedTask, getTask, savePlan, type Task } from '../lib/tasks'
+import { createFollowUpTask, createPlannedTask, getTask, savePlan, type Task } from '../lib/tasks'
+import { ACTIONS_PER_TASK_CAP, splitOverflowActions } from '../lib/actionSplit'
 import HelpButton from '../components/HelpButton'
 
 export default function DiagnoseScreen() {
@@ -86,8 +87,10 @@ export default function DiagnoseScreen() {
     setSuggestions((prev) => (prev ? prev.filter((_, i) => i !== index) : prev))
   }
 
-  const handleConfirmPlan = async () => {
-    if (!user || !suggestions || suggestions.length === 0) return
+  const [pendingSplitConfirm, setPendingSplitConfirm] = useState(false)
+
+  const performSave = async (primary: ActionSuggestion[], overflow: ActionSuggestion[]) => {
+    if (!user) return
     setSaving(true)
     try {
       const deadline = deadlineInput ? Timestamp.fromDate(new Date(`${deadlineInput}T23:59:59`)) : null
@@ -99,14 +102,37 @@ export default function DiagnoseScreen() {
         finalTaskId = await createPlannedTask(user.uid, rawInput, plan)
         setActiveTaskId(finalTaskId)
       }
-      for (const s of suggestions) {
+      for (const s of primary) {
         await createAction(user.uid, finalTaskId, plan.title, s.title, s.estimatedMinutes, { completionCriteria: s.completionCriteria })
+      }
+      if (overflow.length > 0) {
+        const followUpTaskId = await createFollowUpTask(user.uid, finalTaskId, plan)
+        const followUpTitle = `${plan.title}（続き）`
+        for (const s of overflow) {
+          await createAction(user.uid, followUpTaskId, followUpTitle, s.title, s.estimatedMinutes, { completionCriteria: s.completionCriteria })
+        }
       }
       setSaved(true)
       navigate('/')
     } finally {
       setSaving(false)
     }
+  }
+
+  const handleConfirmPlanClick = () => {
+    if (!suggestions || suggestions.length === 0) return
+    if (suggestions.length > ACTIONS_PER_TASK_CAP) {
+      setPendingSplitConfirm(true)
+      return
+    }
+    void performSave(suggestions, [])
+  }
+
+  const handleConfirmSplitAndSave = () => {
+    if (!suggestions) return
+    setPendingSplitConfirm(false)
+    const { primary, overflow } = splitOverflowActions(suggestions)
+    void performSave(primary, overflow)
   }
 
   if (loadingTask) {
@@ -229,7 +255,7 @@ export default function DiagnoseScreen() {
             {suggestions && suggestions.length > 0 && (
               <button
                 className="btn-squish neumorphic-raised bg-primary text-on-primary px-6 py-3 rounded-full font-bold text-sm flex items-center gap-2 disabled:opacity-50 w-full justify-center"
-                onClick={handleConfirmPlan}
+                onClick={handleConfirmPlanClick}
                 disabled={saving}
               >
                 <span className="material-symbols-outlined text-sm">check_circle</span>
@@ -240,6 +266,28 @@ export default function DiagnoseScreen() {
           </section>
         </div>
       </div>
+
+      {pendingSplitConfirm && suggestions && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-6">
+          <div className="neumorphic-raised bg-surface rounded-xl p-6 max-w-sm space-y-4">
+            <h3 className="text-lg font-bold text-on-surface">Actionが{ACTIONS_PER_TASK_CAP}件を超えています</h3>
+            <p className="text-sm text-on-surface-variant">
+              {ACTIONS_PER_TASK_CAP + 1}件目以降（{suggestions.length - ACTIONS_PER_TASK_CAP}件）は「{title.trim()}（続き）」として新しいタスクに分けて登録します。元のタスクが完了するまで、そちらは今日の候補には表示されません。
+            </p>
+            <div className="flex justify-end gap-3">
+              <button onClick={() => setPendingSplitConfirm(false)} className="px-4 py-2 rounded-full text-sm font-bold text-on-surface-variant">
+                やめる
+              </button>
+              <button
+                onClick={handleConfirmSplitAndSave}
+                className="btn-squish neumorphic-raised bg-primary text-white px-6 py-2 rounded-full text-sm font-bold"
+              >
+                分けて登録する
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }
