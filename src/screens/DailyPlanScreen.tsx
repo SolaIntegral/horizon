@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import { useSearchParams } from 'react-router-dom'
+import { useNavigate, useSearchParams } from 'react-router-dom'
 import { Timestamp } from 'firebase/firestore'
 import { useAuth } from '../lib/AuthContext'
 import { subscribeScheduledTasks, type Task } from '../lib/tasks'
@@ -7,10 +7,13 @@ import { subscribeActiveActions, setActionDeferredTo, type Action } from '../lib
 import { subscribeDailyPlan, upsertDailyPlan, type DailyPlan, type PlannedSlot, type TimeSlot } from '../lib/dailyPlans'
 import { buildDailySchedule, type CandidateAction, type FixedEvent } from '../lib/dailyPlanEngine'
 import { addDays, combineDateAndTime, formatDateKey, formatTime, timeToHHMM } from '../lib/dateUtils'
+import { subscribeUserSettings, DEFAULT_WEEKDAY_SCHEDULE, type WeekdayScheduleMap } from '../lib/userSettings'
+import { fatigueRatio, fatigueLabel, type Fatigue } from '../lib/fatigue'
 import HelpButton from '../components/HelpButton'
 import MorningSetupForm from '../components/MorningSetupForm'
 
 type DayTab = 'today' | 'tomorrow' | 'plus2'
+type ReplanTarget = 'today' | 'tomorrow'
 
 const REPLAN_FILL_RATIO = 0.75
 
@@ -50,6 +53,7 @@ function toTimelineBlocks(plan: DailyPlan, actionTitleOf: (id: string) => string
 
 export default function DailyPlanScreen() {
   const { user } = useAuth()
+  const navigate = useNavigate()
   const [searchParams, setSearchParams] = useSearchParams()
   const today = useMemo(() => new Date(), [])
   const todayKey = formatDateKey(today)
@@ -59,10 +63,15 @@ export default function DailyPlanScreen() {
   const [scheduledTasks, setScheduledTasks] = useState<Task[]>([])
   const [activeActions, setActiveActions] = useState<Action[]>([])
   const [plan, setPlan] = useState<DailyPlan | null>(null)
+  const [tomorrowPlan, setTomorrowPlan] = useState<DailyPlan | null>(null)
+  const [weekdaySchedule, setWeekdaySchedule] = useState<WeekdayScheduleMap>(DEFAULT_WEEKDAY_SCHEDULE)
   const [activeTab, setActiveTab] = useState<DayTab>('today')
   const [editingSetup, setEditingSetup] = useState(false)
+  const [revisingTomorrow, setRevisingTomorrow] = useState(false)
 
-  const [replanStep, setReplanStep] = useState<null | 'reason' | 'compare'>(null)
+  const [replanStep, setReplanStep] = useState<null | 'fatigue' | 'reason' | 'compare'>(null)
+  const [replanTarget, setReplanTarget] = useState<ReplanTarget>('today')
+  const [replanFatigue, setReplanFatigue] = useState<Fatigue>('normal')
   const [replanReason, setReplanReason] = useState<string | null>(null)
   const [replanProposal, setReplanProposal] = useState<{ plannedSlots: PlannedSlot[]; bufferSlots: TimeSlot[] } | null>(null)
   const [applyingReplan, setApplyingReplan] = useState(false)
@@ -75,13 +84,19 @@ export default function DailyPlanScreen() {
       setPlan(p)
       if (!p) setEditingSetup(true)
     })
+    const unsub4 = subscribeDailyPlan(user.uid, tomorrowKey, setTomorrowPlan)
+    const unsub5 = subscribeUserSettings(user.uid, (settings) => {
+      if (settings?.weekdaySchedule) setWeekdaySchedule(settings.weekdaySchedule)
+    })
     return () => {
       unsub1()
       unsub2()
       unsub3()
+      unsub4()
+      unsub5()
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [user, todayKey])
+  }, [user, todayKey, tomorrowKey])
 
   // Wait for the plan to actually load before entering the replan reason
   // step — flipping into it immediately from the URL param risked the user
@@ -99,26 +114,44 @@ export default function DailyPlanScreen() {
 
   const closeReplan = () => {
     setReplanStep(null)
+    setReplanTarget('today')
     setReplanReason(null)
     setReplanProposal(null)
     if (searchParams.get('replan')) setSearchParams({}, { replace: true })
   }
 
+  // 「明日の予定を調整する」— 前夜に翌日分だけを見直すフロー。今日の見直しと
+  // 違い、翌日の体調がまだ分かっていないのでまず疲労度を聞く。
+  const handleStartTomorrowReplan = () => {
+    setReplanTarget('tomorrow')
+    setReplanStep('fatigue')
+  }
+
+  const handleSelectFatigue = (fatigue: Fatigue) => {
+    setReplanFatigue(fatigue)
+    setReplanStep('reason')
+  }
+
   const handleSelectReplanReason = (reason: string) => {
-    if (!plan?.dayEndTime) return
+    const targetPlan = replanTarget === 'today' ? plan : tomorrowPlan
+    if (!targetPlan?.dayEndTime) return
     setReplanReason(reason)
 
-    const fixedEvents: FixedEvent[] = plan.calendarBusySlots.map((s) => ({ start: s.start.toDate(), end: s.end.toDate(), title: s.title }))
-    const requiredIds = plan.requiredActionIds ?? []
+    const fixedEvents: FixedEvent[] = targetPlan.calendarBusySlots.map((s) => ({ start: s.start.toDate(), end: s.end.toDate(), title: s.title }))
+    const requiredIds = targetPlan.requiredActionIds ?? []
     const requiredActions: CandidateAction[] = requiredIds
       .filter((id) => actionMap.has(id))
       .map((id) => ({ actionId: id, estimatedMinutes: actionMap.get(id)!.estimatedMinutes }))
-    const otherActions: CandidateAction[] = plan.selectedActionIds
+    const otherActions: CandidateAction[] = targetPlan.selectedActionIds
       .filter((id) => actionMap.has(id) && !requiredIds.includes(id))
       .map((id) => ({ actionId: id, estimatedMinutes: actionMap.get(id)!.estimatedMinutes }))
 
-    const replanDayStart = new Date()
-    let replanDayEnd = plan.dayEndTime.toDate()
+    const targetDate = replanTarget === 'today' ? today : addDays(today, 1)
+    const weekdayDefault = weekdaySchedule[String(targetDate.getDay())] ?? DEFAULT_WEEKDAY_SCHEDULE[String(targetDate.getDay())]
+    // 今日の見直しは「今から」、翌日の見直しはまだ迎えていない日なので曜日の
+    // 既定開始時刻から計算する。
+    const replanDayStart = replanTarget === 'today' ? new Date() : combineDateAndTime(targetDate, weekdayDefault.start)
+    let replanDayEnd = targetPlan.dayEndTime.toDate()
     // Same "already past" guard as MorningSetupForm — a stored end time that
     // was itself created before the earlier fix (or just a very late replan)
     // should mean "tomorrow", not an empty schedule.
@@ -128,7 +161,7 @@ export default function DailyPlanScreen() {
       dayStart: replanDayStart,
       dayEnd: replanDayEnd,
       fixedEvents,
-      fillRatio: REPLAN_FILL_RATIO,
+      fillRatio: replanTarget === 'today' ? REPLAN_FILL_RATIO : fatigueRatio[replanFatigue],
       requiredActions,
       otherActions,
     })
@@ -144,7 +177,8 @@ export default function DailyPlanScreen() {
     if (!user || !replanProposal) return
     setApplyingReplan(true)
     try {
-      await upsertDailyPlan(user.uid, todayKey, { plannedSlots: replanProposal.plannedSlots, bufferSlots: replanProposal.bufferSlots })
+      const targetKey = replanTarget === 'today' ? todayKey : tomorrowKey
+      await upsertDailyPlan(user.uid, targetKey, { plannedSlots: replanProposal.plannedSlots, bufferSlots: replanProposal.bufferSlots })
       closeReplan()
     } finally {
       setApplyingReplan(false)
@@ -218,17 +252,23 @@ export default function DailyPlanScreen() {
                 <p>「必須」に指定したAction（最大2件）は午前中に優先配置されます。体調が「しんどい」場合は詰め込む量を自動的に減らし、空き時間の一部は必ず「バッファ」として空けておきます。</p>
                 <p>固定予定は、Googleカレンダー連携が入るまでの仮の手入力です。</p>
                 <p>「予定表を作成」を押すと時間割ができます。各Actionの開始時刻の変更・並び替え（↑↓）・「明日に回す」で自由に調整できます。「今日は入りませんでした」に出たActionは、今日の枠には収まらなかったものです。</p>
-                <p>「明日」「3日後まで」タブは締切や「明日に回す」で回したActionの簡易プレビューです。本格的な時間割は当日の朝にあらためて作成してください。</p>
+                <p>「明日」「3日後まで」タブは締切や「明日に回す」で回したActionの簡易プレビューです。</p>
                 <p>Horiメニューの「今日の計画を見直す」からは、理由を選ぶと残り時間だけを組み直した修正案を確認できます（現在の予定と比較してから適用できます）。</p>
+                <p>「明日」タブでは前夜のうちに翌日の予定を立てたり調整したりできます。まだ予定がなければ体調を聞かれてから予定を作成、すでに予定があれば体調→理由→修正案の確認という流れで翌日分だけを見直せます。</p>
               </HelpButton>
             </div>
             <p className="text-lg text-on-surface-variant">{today.toLocaleDateString('ja-JP', { month: 'long', day: 'numeric', weekday: 'short' })}</p>
           </div>
-          {plan && !editingSetup && !replanStep && (
-            <button onClick={() => setEditingSetup(true)} className="neumorphic-raised px-4 py-2 rounded-full text-sm font-bold text-primary">
-              予定を作り直す
+          <div className="flex items-center gap-2">
+            <button onClick={() => navigate('/plan/week')} className="neumorphic-raised px-4 py-2 rounded-full text-sm font-bold text-primary">
+              週の予定をまとめて立てる
             </button>
-          )}
+            {plan && !editingSetup && !replanStep && (
+              <button onClick={() => setEditingSetup(true)} className="neumorphic-raised px-4 py-2 rounded-full text-sm font-bold text-primary">
+                予定を作り直す
+              </button>
+            )}
+          </div>
         </header>
 
         <div className="flex gap-3">
@@ -245,7 +285,27 @@ export default function DailyPlanScreen() {
           ))}
         </div>
 
-        {activeTab === 'today' && !editingSetup && replanStep === 'reason' && (
+        {!editingSetup && !revisingTomorrow && replanStep === 'fatigue' && (
+          <section className="neumorphic-raised p-6 rounded-lg bg-surface space-y-4">
+            <h3 className="text-lg font-bold text-on-surface">明日の体調は？</h3>
+            <div className="flex gap-2">
+              {(['good', 'normal', 'tired'] as Fatigue[]).map((f) => (
+                <button
+                  key={f}
+                  onClick={() => handleSelectFatigue(f)}
+                  className="flex-1 py-2 neumorphic-raised rounded-full text-xs font-bold text-on-surface-variant"
+                >
+                  {fatigueLabel[f]}
+                </button>
+              ))}
+            </div>
+            <button onClick={closeReplan} className="text-sm font-bold text-on-surface-variant hover:text-primary">
+              キャンセル
+            </button>
+          </section>
+        )}
+
+        {!editingSetup && !revisingTomorrow && replanStep === 'reason' && (
           <section className="neumorphic-raised p-6 rounded-lg bg-surface space-y-4">
             <h3 className="text-lg font-bold text-on-surface">計画を見直す理由は？</h3>
             <div className="flex flex-wrap gap-2">
@@ -261,14 +321,14 @@ export default function DailyPlanScreen() {
           </section>
         )}
 
-        {activeTab === 'today' && !editingSetup && replanStep === 'compare' && replanProposal && plan && (
+        {!editingSetup && !revisingTomorrow && replanStep === 'compare' && replanProposal && (replanTarget === 'today' ? plan : tomorrowPlan) && (
           <section className="neumorphic-raised p-6 rounded-lg bg-surface space-y-6">
             <h3 className="text-lg font-bold text-on-surface">修正案を確認</h3>
             {replanReason && <p className="text-xs text-outline">理由: {replanReason}</p>}
             <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
               <div className="space-y-2">
                 <h4 className="text-xs font-bold text-outline uppercase tracking-widest">現在の予定</h4>
-                {[...plan.plannedSlots]
+                {[...(replanTarget === 'today' ? plan! : tomorrowPlan!).plannedSlots]
                   .sort((a, b) => a.start.toMillis() - b.start.toMillis())
                   .map((s, i) => (
                     <div key={i} className="neumorphic-sunken rounded-lg p-3 text-sm">
@@ -375,12 +435,39 @@ export default function DailyPlanScreen() {
           </div>
         )}
 
-        {activeTab !== 'today' && (
+        {activeTab === 'tomorrow' && revisingTomorrow && (
+          <MorningSetupForm
+            activeActions={activeActions}
+            scheduledTasks={scheduledTasks}
+            existingPlan={tomorrowPlan}
+            targetDate={addDays(today, 1)}
+            weekdaySchedule={weekdaySchedule}
+            onComplete={() => setRevisingTomorrow(false)}
+          />
+        )}
+
+        {activeTab !== 'today' && !replanStep && !revisingTomorrow && (
           <section className="neumorphic-raised p-6 rounded-lg bg-surface space-y-3">
-            <h3 className="text-xs font-bold text-outline uppercase tracking-widest">
-              {activeTab === 'tomorrow' ? '明日の仮予定' : '3日後までの仮予定'}
-            </h3>
-            <p className="text-xs text-outline">締切が近いActionと、今日から回したActionの簡易プレビューです。当日の朝、あらためて予定表を作成してください。</p>
+            <div className="flex justify-between items-start gap-4">
+              <h3 className="text-xs font-bold text-outline uppercase tracking-widest">
+                {activeTab === 'tomorrow' ? '明日の仮予定' : '3日後までの仮予定'}
+              </h3>
+              {activeTab === 'tomorrow' &&
+                (tomorrowPlan && tomorrowPlan.plannedSlots.length > 0 ? (
+                  <button onClick={handleStartTomorrowReplan} className="text-xs font-bold text-primary hover:underline whitespace-nowrap">
+                    明日の予定を調整する
+                  </button>
+                ) : (
+                  <button onClick={() => setRevisingTomorrow(true)} className="text-xs font-bold text-primary hover:underline whitespace-nowrap">
+                    明日の予定を立てる
+                  </button>
+                ))}
+            </div>
+            <p className="text-xs text-outline">
+              {activeTab === 'tomorrow'
+                ? '締切が近いActionと、今日から回したActionの簡易プレビューです。前夜のうちに、あらためて予定を確認・調整してください。'
+                : '締切が近いActionと、今日から回したActionの簡易プレビューです。当日の朝、あらためて予定表を作成してください。'}
+            </p>
             {(activeTab === 'tomorrow' ? tomorrowPreview : plus2Preview).length === 0 && (
               <p className="text-sm text-outline py-4">対象のActionはありません。</p>
             )}

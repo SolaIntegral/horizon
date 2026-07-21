@@ -1,4 +1,4 @@
-import { doc, getDoc, onSnapshot, setDoc, serverTimestamp, Timestamp, type Unsubscribe } from 'firebase/firestore'
+import { doc, getDoc, onSnapshot, setDoc, serverTimestamp, writeBatch, Timestamp, type Unsubscribe } from 'firebase/firestore'
 import { db } from './firebase'
 
 // 固定予定・空き時間・作業割当を含む「1日の予定表」。
@@ -68,4 +68,83 @@ export async function upsertDailyPlan(
     { userId, date, ...updates, updatedAt: serverTimestamp() },
     { merge: true },
   )
+}
+
+// 週次プランニングで7日分をまとめて確定するための一括書き込み。1つの
+// writeBatchで送るため、途中で失敗しても中途半端な週が残らない（all-or-nothing）。
+export async function upsertDailyPlansBatch(
+  userId: string,
+  entries: { date: string; updates: Partial<Omit<DailyPlan, 'id' | 'userId' | 'date' | 'createdAt'>> }[],
+) {
+  const batch = writeBatch(db)
+  for (const { date, updates } of entries) {
+    batch.set(
+      doc(db, 'dailyPlans', planDocId(userId, date)),
+      { userId, date, ...updates, updatedAt: serverTimestamp() },
+      { merge: true },
+    )
+  }
+  await batch.commit()
+}
+
+// 既存のsubscribeDailyPlan（1doc用onSnapshot）を複数日分束ねたもの。dateKeys
+// ごとに個別リスナーを張り、最新のスナップショットをMapにまとめてcallbackへ渡す。
+export function subscribeDailyPlansForWeek(
+  userId: string,
+  dateKeys: string[],
+  callback: (plans: Map<string, DailyPlan | null>) => void,
+): Unsubscribe {
+  const plans = new Map<string, DailyPlan | null>()
+  const unsubs = dateKeys.map((date) =>
+    subscribeDailyPlan(userId, date, (plan) => {
+      plans.set(date, plan)
+      callback(new Map(plans))
+    }),
+  )
+  return () => unsubs.forEach((u) => u())
+}
+
+// あるActionを別の日のplannedSlots/selectedActionIdsへ移動する。移動元が
+// 指定されていればそちらのplannedSlots/selectedActionIds/requiredActionIdsから
+// も取り除く（TodayFixPanelの削除ロジックと同じ考え方）。2doc間の書き込みは
+// atomicになるようwriteBatchでまとめる。
+export async function moveActionToDay(
+  userId: string,
+  actionId: string,
+  fromPlan: { date: string; plan: DailyPlan } | null,
+  toPlan: { date: string; plan: DailyPlan | null },
+  slot: { start: Timestamp; end: Timestamp },
+) {
+  const batch = writeBatch(db)
+
+  if (fromPlan) {
+    batch.set(
+      doc(db, 'dailyPlans', planDocId(userId, fromPlan.date)),
+      {
+        userId,
+        date: fromPlan.date,
+        selectedActionIds: fromPlan.plan.selectedActionIds.filter((id) => id !== actionId),
+        requiredActionIds: (fromPlan.plan.requiredActionIds ?? []).filter((id) => id !== actionId),
+        plannedSlots: fromPlan.plan.plannedSlots.filter((s) => s.actionId !== actionId),
+        updatedAt: serverTimestamp(),
+      },
+      { merge: true },
+    )
+  }
+
+  const existingSelected = toPlan.plan?.selectedActionIds ?? []
+  const existingSlots = toPlan.plan?.plannedSlots ?? []
+  batch.set(
+    doc(db, 'dailyPlans', planDocId(userId, toPlan.date)),
+    {
+      userId,
+      date: toPlan.date,
+      selectedActionIds: existingSelected.includes(actionId) ? existingSelected : [...existingSelected, actionId],
+      plannedSlots: [...existingSlots.filter((s) => s.actionId !== actionId), { actionId, start: slot.start, end: slot.end }],
+      updatedAt: serverTimestamp(),
+    },
+    { merge: true },
+  )
+
+  await batch.commit()
 }
