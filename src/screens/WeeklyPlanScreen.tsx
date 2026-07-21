@@ -81,10 +81,21 @@ function boardItemsForDay(day: DraftDay): BoardItem[] {
   return [...fixed, ...actions]
 }
 
-// 同じ時間帯に重なるカード(固定予定・Action問わず)を横に並べて全て掴める
-// ようにするための列割り当て。開始時刻順に、空いている列があればそこへ、
-// なければ新しい列を追加する典型的なカレンダー表示のアルゴリズム。
-function layoutDayItems(items: BoardItem[]): Map<string, { col: number; cols: number }> {
+interface ItemLayout {
+  col: number
+  cols: number
+  top: number
+  height: number
+}
+
+// 同じ時間帯に本当に重なるカード(固定予定・Action問わず)だけを横に並べて
+// 全て掴めるようにするための列割り当て。開始時刻順に、空いている列があれば
+// そこへ、なければ新しい列を追加する典型的なカレンダー表示のアルゴリズム。
+// ここでの重なり判定は実際の開始/終了時刻で行い、表示上の最低高さ
+// (MIN_BLOCK_HEIGHT)は考慮しない — 考慮すると、5分空きで連続する短い
+// Action同士まで「重なっている」とみなされ、細い列に分割されて逆に読みにくく
+// なるため。
+function assignColumns(items: BoardItem[]): Map<string, { col: number; cols: number }> {
   const sorted = [...items].sort((a, b) => a.start.getTime() - b.start.getTime())
   const result = new Map<string, { col: number; cols: number }>()
   let cluster: BoardItem[] = []
@@ -121,6 +132,31 @@ function layoutDayItems(items: BoardItem[]): Map<string, { col: number; cols: nu
     clusterEnd = Math.max(clusterEnd, it.end.getTime())
   }
   flush()
+  return result
+}
+
+// 列(重なりなし同士のグループ)ごとに割り当てた上で、各列内を開始時刻順に
+// 積み上げて実際のtop/heightを決める。MIN_BLOCK_HEIGHTで底上げされた1枚の
+// 高さが次のカードの本来の開始位置を追い越しそうな場合は、次のカードを
+// その分だけ下にずらす(=時間軸上の位置よりカード同士の非重なりを優先する)。
+// これにより、時間的には重ならない短いAction同士が縦につぶれて重なって
+// 表示される事故を防ぐ。
+function computeBoardLayout(items: BoardItem[], gridStartMinutes: number): Map<string, ItemLayout> {
+  const columns = assignColumns(items)
+  const sorted = [...items].sort((a, b) => a.start.getTime() - b.start.getTime())
+  const laneBottoms: number[] = []
+  const GAP_PX = 3
+  const result = new Map<string, ItemLayout>()
+
+  for (const it of sorted) {
+    const { col, cols } = columns.get(it.id) ?? { col: 0, cols: 1 }
+    const desiredTop = (minutesOfDate(it.start) - gridStartMinutes) * PIXELS_PER_MINUTE
+    const top = Math.max(desiredTop, (laneBottoms[col] ?? -Infinity) + GAP_PX)
+    const naturalHeight = (minutesOfDate(it.end) - minutesOfDate(it.start)) * PIXELS_PER_MINUTE
+    const height = Math.max(MIN_BLOCK_HEIGHT, naturalHeight)
+    laneBottoms[col] = top + height
+    result.set(it.id, { col, cols, top, height })
+  }
   return result
 }
 
@@ -232,7 +268,28 @@ export default function WeeklyPlanScreen() {
     return { startMinutes: Math.floor(min / 60) * 60, endMinutes: Math.ceil(max / 60) * 60 }
   }, [draftDays, weekdaySchedule])
 
-  const boardHeight = (gridBounds.endMinutes - gridBounds.startMinutes) * PIXELS_PER_MINUTE
+  // 各日のカード配置(列・top・height)。短いActionが5分間隔などで詰まっていても
+  // MIN_BLOCK_HEIGHTの底上げで隣のカードと重ならないよう、ここで縦位置を調整済み。
+  const dayLayouts = useMemo(() => {
+    if (!draftDays) return []
+    return draftDays.map((day) => {
+      const items = boardItemsForDay(day)
+      const layout = computeBoardLayout(items, gridBounds.startMinutes)
+      return { items, layout }
+    })
+  }, [draftDays, gridBounds.startMinutes])
+
+  // 縦積みの底上げで最後のカードが時間軸の終わりより下にはみ出すことがあるため、
+  // その分もボードの高さに含めてスクロール領域を確保する。
+  const boardHeight = useMemo(() => {
+    const natural = (gridBounds.endMinutes - gridBounds.startMinutes) * PIXELS_PER_MINUTE
+    let maxBottom = natural
+    for (const { layout } of dayLayouts) {
+      for (const v of layout.values()) maxBottom = Math.max(maxBottom, v.top + v.height)
+    }
+    return maxBottom
+  }, [dayLayouts, gridBounds])
+
   const hourMarks = useMemo(() => {
     const marks: number[] = []
     for (let m = gridBounds.startMinutes; m <= gridBounds.endMinutes; m += 60) marks.push(m)
@@ -485,8 +542,7 @@ export default function WeeklyPlanScreen() {
               </div>
 
               {draftDays.map((day, dayIndex) => {
-                const items = boardItemsForDay(day)
-                const layout = layoutDayItems(items)
+                const { items, layout } = dayLayouts[dayIndex] ?? { items: [], layout: new Map<string, ItemLayout>() }
                 return (
                   <div key={day.dateKey} className="flex-shrink-0 w-40">
                     <p className="text-xs font-bold text-on-surface text-center" style={{ height: DAY_HEADER_HEIGHT }}>
@@ -510,9 +566,7 @@ export default function WeeklyPlanScreen() {
                       {items.length === 0 && <p className="text-[11px] text-outline text-center pt-6">配置なし</p>}
 
                       {items.map((item) => {
-                        const { col, cols } = layout.get(item.id) ?? { col: 0, cols: 1 }
-                        const top = (minutesOfDate(item.start) - gridBounds.startMinutes) * PIXELS_PER_MINUTE
-                        const height = Math.max(MIN_BLOCK_HEIGHT, (minutesOfDate(item.end) - minutesOfDate(item.start)) * PIXELS_PER_MINUTE)
+                        const { col, cols, top, height } = layout.get(item.id) ?? { col: 0, cols: 1, top: 0, height: MIN_BLOCK_HEIGHT }
                         const widthPct = 100 / cols
                         const style: CSSProperties = { top, height, left: `${col * widthPct}%`, width: `calc(${widthPct}% - 3px)` }
 
