@@ -15,8 +15,6 @@ import MorningSetupForm from '../components/MorningSetupForm'
 type DayTab = 'today' | 'tomorrow' | 'plus2'
 type ReplanTarget = 'today' | 'tomorrow'
 
-const REPLAN_FILL_RATIO = 0.75
-
 const replanReasons = ['急な予定が入った', '体調・集中力が変わった', 'Missionを想定より大きかった', '優先度が変わった', '必要な情報が揃っていない', 'その他']
 
 interface TimelineBlock {
@@ -65,7 +63,7 @@ export default function DailyPlanScreen() {
   const [plan, setPlan] = useState<DailyPlan | null>(null)
   const [tomorrowPlan, setTomorrowPlan] = useState<DailyPlan | null>(null)
   const [weekdaySchedule, setWeekdaySchedule] = useState<WeekdayScheduleMap>(DEFAULT_WEEKDAY_SCHEDULE)
-  const [activeTab, setActiveTab] = useState<DayTab>('today')
+  const [activeTab, setActiveTab] = useState<DayTab>(() => (searchParams.get('tab') === 'tomorrow' ? 'tomorrow' : 'today'))
   const [editingSetup, setEditingSetup] = useState(false)
   const [revisingTomorrow, setRevisingTomorrow] = useState(false)
 
@@ -103,7 +101,7 @@ export default function DailyPlanScreen() {
   // (or a fast test) clicking a reason before `plan` existed, silently no-op'ing.
   useEffect(() => {
     if (searchParams.get('replan') === '1' && plan && !editingSetup && replanStep === null) {
-      setReplanStep('reason')
+      setReplanStep('fatigue')
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [plan, editingSetup])
@@ -161,7 +159,7 @@ export default function DailyPlanScreen() {
       dayStart: replanDayStart,
       dayEnd: replanDayEnd,
       fixedEvents,
-      fillRatio: replanTarget === 'today' ? REPLAN_FILL_RATIO : fatigueRatio[replanFatigue],
+      fillRatio: fatigueRatio[replanFatigue],
       requiredActions,
       otherActions,
     })
@@ -253,7 +251,7 @@ export default function DailyPlanScreen() {
                 <p>固定予定は、Googleカレンダー連携が入るまでの仮の手入力です。</p>
                 <p>「予定表を作成」を押すと時間割ができます。各Actionの開始時刻の変更・並び替え（↑↓）・「明日に回す」で自由に調整できます。「今日は入りませんでした」に出たActionは、今日の枠には収まらなかったものです。</p>
                 <p>「明日」「3日後まで」タブは締切や「明日に回す」で回したActionの簡易プレビューです。</p>
-                <p>Horiメニューの「今日の計画を見直す」からは、理由を選ぶと残り時間だけを組み直した修正案を確認できます（現在の予定と比較してから適用できます）。</p>
+                <p>Horiメニューの「今日の計画を見直す」やToday画面の「予定を確認する」からは、体調→理由を選ぶと残り時間だけを組み直した修正案を確認できます（現在の予定と比較してから適用できます）。</p>
                 <p>「明日」タブでは前夜のうちに翌日の予定を立てたり調整したりできます。まだ予定がなければ体調を聞かれてから予定を作成、すでに予定があれば体調→理由→修正案の確認という流れで翌日分だけを見直せます。</p>
               </HelpButton>
             </div>
@@ -287,7 +285,7 @@ export default function DailyPlanScreen() {
 
         {!editingSetup && !revisingTomorrow && replanStep === 'fatigue' && (
           <section className="neumorphic-raised p-6 rounded-lg bg-surface space-y-4">
-            <h3 className="text-lg font-bold text-on-surface">明日の体調は？</h3>
+            <h3 className="text-lg font-bold text-on-surface">{replanTarget === 'today' ? '今日' : '明日'}の体調は？</h3>
             <div className="flex gap-2">
               {(['good', 'normal', 'tired'] as Fatigue[]).map((f) => (
                 <button
