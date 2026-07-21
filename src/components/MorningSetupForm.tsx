@@ -1,23 +1,17 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Timestamp } from 'firebase/firestore'
 import { useAuth } from '../lib/AuthContext'
-import { isTaskBlocked, type Task } from '../lib/tasks'
+import type { Task } from '../lib/tasks'
 import type { Action } from '../lib/actions'
 import { upsertDailyPlan, type DailyPlan, type RequiredGoalCondition, type TimeSlot } from '../lib/dailyPlans'
 import { buildDailySchedule, type CandidateAction, type FixedEvent, type PlannedBlock, type BufferBlock } from '../lib/dailyPlanEngine'
-import { addDays, combineDateAndTime, formatDateKey, formatTime, timeToHHMM } from '../lib/dateUtils'
+import { addDays, combineDateAndTime, formatDateKey, formatTime, isSameDay, timeToHHMM } from '../lib/dateUtils'
+import { fatigueRatio, fatigueLabel, type Fatigue } from '../lib/fatigue'
+import { DEFAULT_WEEKDAY_SCHEDULE, type WeekdayScheduleMap } from '../lib/userSettings'
+import { rankCandidateActions } from '../lib/candidateRanking'
+import FixedEventEditor, { type FixedEventDraft } from './FixedEventEditor'
 
-type Fatigue = 'good' | 'normal' | 'tired'
 type Step = 'form' | 'preview'
-
-const fatigueRatio: Record<Fatigue, number> = { good: 0.8, normal: 0.75, tired: 0.5 }
-const fatigueLabel: Record<Fatigue, string> = { good: '良い', normal: '普通', tired: 'しんどい' }
-
-interface FixedEventDraft {
-  title: string
-  start: string // HH:mm
-  end: string // HH:mm
-}
 
 interface PreviewData {
   fixedEvents: FixedEvent[]
@@ -48,21 +42,30 @@ function buildPreviewBlocks(data: PreviewData, actionTitleOf: (id: string) => st
 }
 
 // The "今日の予定を作る" wizard — shared by Today (morning_setup phase, no
-// navigation) and the Plan screen's "予定を作り直す" re-edit flow.
+// navigation), the Plan screen's "予定を作り直す" re-edit flow, and (via
+// targetDate) the night-before "明日の予定を立てる" flow for a day that has
+// no DailyPlan yet.
 export default function MorningSetupForm({
   activeActions,
   scheduledTasks,
   existingPlan,
+  targetDate,
+  weekdaySchedule,
   onComplete,
 }: {
   activeActions: Action[]
   scheduledTasks: Task[]
   existingPlan: DailyPlan | null
+  targetDate?: Date
+  weekdaySchedule?: WeekdayScheduleMap
   onComplete: () => void
 }) {
   const { user } = useAuth()
-  const today = useMemo(() => new Date(), [])
+  const today = useMemo(() => targetDate ?? new Date(), [targetDate])
   const todayKey = formatDateKey(today)
+  const schedule = weekdaySchedule ?? DEFAULT_WEEKDAY_SCHEDULE
+  const weekdayDefault = schedule[String(today.getDay())] ?? DEFAULT_WEEKDAY_SCHEDULE[String(today.getDay())]
+  const dayLabel = isSameDay(today, new Date()) ? '今日' : '明日'
 
   const [showAllCandidates, setShowAllCandidates] = useState(false)
   const [fatigue, setFatigue] = useState<Fatigue>('normal')
@@ -72,7 +75,7 @@ export default function MorningSetupForm({
   const [requiredGoalTimeMinutes, setRequiredGoalTimeMinutes] = useState('60')
   const [requiredActionIds, setRequiredActionIds] = useState<string[]>([])
   const [selectedActionIds, setSelectedActionIds] = useState<string[]>([])
-  const [dayEndTimeInput, setDayEndTimeInput] = useState('22:00')
+  const [dayEndTimeInput, setDayEndTimeInput] = useState(weekdayDefault.end)
   const [fixedEventsDraft, setFixedEventsDraft] = useState<FixedEventDraft[]>([])
   const [saving, setSaving] = useState(false)
   const [step, setStep] = useState<Step>('form')
@@ -97,39 +100,9 @@ export default function MorningSetupForm({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  const taskMap = useMemo(() => new Map(scheduledTasks.map((t) => [t.id, t])), [scheduledTasks])
   const actionMap = useMemo(() => new Map(activeActions.map((a) => [a.id, a])), [activeActions])
-  const scheduledTaskIds = useMemo(() => new Set(scheduledTasks.map((t) => t.id)), [scheduledTasks])
 
-  const rankedCandidates = useMemo(() => {
-    return activeActions
-      .filter((a) => {
-        const task = taskMap.get(a.taskId)
-        return !task || !isTaskBlocked(task, scheduledTaskIds)
-      })
-      .map((a) => {
-        const task = taskMap.get(a.taskId)
-        let reason = 'その他'
-        let priority = 3
-        if (task?.deadline) {
-          const days = (task.deadline.toDate().getTime() - Date.now()) / 86400000
-          if (days <= 3) {
-            reason = '締切が近い'
-            priority = 0
-          }
-        }
-        if (priority === 3 && task?.status === 'interrupted') {
-          reason = '中断中'
-          priority = 1
-        }
-        if (priority === 3 && task?.status === 'in_progress') {
-          reason = '進行中'
-          priority = 2
-        }
-        return { action: a, reason, priority }
-      })
-      .sort((a, b) => a.priority - b.priority)
-  }, [activeActions, taskMap, scheduledTaskIds])
+  const rankedCandidates = useMemo(() => rankCandidateActions(activeActions, scheduledTasks), [activeActions, scheduledTasks])
 
   const visibleCandidates = showAllCandidates ? rankedCandidates : rankedCandidates.slice(0, 5)
 
@@ -157,15 +130,12 @@ export default function MorningSetupForm({
     }
   }
 
-  const addFixedEventRow = () => setFixedEventsDraft((prev) => [...prev, { title: '', start: '09:00', end: '10:00' }])
-  const updateFixedEventRow = (i: number, patch: Partial<FixedEventDraft>) =>
-    setFixedEventsDraft((prev) => prev.map((f, idx) => (idx === i ? { ...f, ...patch } : f)))
-  const removeFixedEventRow = (i: number) => setFixedEventsDraft((prev) => prev.filter((_, idx) => idx !== i))
-
   // Computes the schedule and shows it for confirmation — nothing is saved
   // to Firestore until handleConfirmPlan runs.
   const handleComputePreview = () => {
-    const dayStart = new Date()
+    // targetDateが今日なら「今から」、未来の日なら曜日ごとの既定開始時刻から
+    // （まだ迎えていない日に「今」を基準にしても意味がないため）。
+    const dayStart = isSameDay(today, new Date()) ? new Date() : combineDateAndTime(today, weekdayDefault.start)
     let dayEnd = combineDateAndTime(today, dayEndTimeInput)
     // A same-day end time that's already passed (e.g. "00:00" typed after
     // midnight) means "until that time tomorrow", not "already over" —
@@ -252,7 +222,7 @@ export default function MorningSetupForm({
     return (
       <div className="space-y-8">
         <section className="neumorphic-raised p-6 rounded-lg bg-surface space-y-4">
-          <h3 className="text-xs font-bold text-outline uppercase tracking-widest">今日の予定（確認）</h3>
+          <h3 className="text-xs font-bold text-outline uppercase tracking-widest">{dayLabel}の予定（確認）</h3>
           {requiredGoalText.trim() && (
             <p className="text-sm text-on-surface">
               <span className="font-bold text-primary">必須目標：</span>
@@ -317,7 +287,7 @@ export default function MorningSetupForm({
   return (
     <div className="space-y-8">
       <section className="neumorphic-raised p-6 rounded-lg bg-surface space-y-4">
-        <h3 className="text-xs font-bold text-outline uppercase tracking-widest">今日の状態</h3>
+        <h3 className="text-xs font-bold text-outline uppercase tracking-widest">{dayLabel}の状態</h3>
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
           <div className="space-y-2">
             <label className="text-xs font-bold text-outline">睡眠時間（時間・目安）</label>
@@ -350,7 +320,7 @@ export default function MorningSetupForm({
       </section>
 
       <section className="neumorphic-raised p-6 rounded-lg bg-surface space-y-4">
-        <h3 className="text-xs font-bold text-outline uppercase tracking-widest">今日中に終わらせたいこと（必須目標・任意）</h3>
+        <h3 className="text-xs font-bold text-outline uppercase tracking-widest">{dayLabel}中に終わらせたいこと（必須目標・任意）</h3>
         <textarea
           className="w-full h-16 p-3 text-sm neumorphic-sunken border-none rounded-lg bg-surface resize-none"
           placeholder="例：報告書のドラフトを送れる状態にする"
@@ -395,7 +365,7 @@ export default function MorningSetupForm({
 
       <section className="neumorphic-raised p-6 rounded-lg bg-surface space-y-4">
         <div className="flex justify-between items-center">
-          <h3 className="text-xs font-bold text-outline uppercase tracking-widest">今日進めるAction</h3>
+          <h3 className="text-xs font-bold text-outline uppercase tracking-widest">{dayLabel}進めるAction</h3>
           <button onClick={() => setShowAllCandidates((v) => !v)} className="text-xs font-bold text-primary hover:underline">
             {showAllCandidates ? 'おすすめのみ表示' : 'すべて表示'}
           </button>
@@ -431,43 +401,9 @@ export default function MorningSetupForm({
       </section>
 
       <section className="neumorphic-raised p-6 rounded-lg bg-surface space-y-4">
-        <div className="flex justify-between items-center">
-          <h3 className="text-xs font-bold text-outline uppercase tracking-widest">固定予定（カレンダー連携までの仮入力）</h3>
-          <button onClick={addFixedEventRow} className="text-xs font-bold text-primary hover:underline">
-            + 追加
-          </button>
-        </div>
-        {fixedEventsDraft.length === 0 && <p className="text-sm text-outline">固定予定はありません。</p>}
-        <div className="space-y-2">
-          {fixedEventsDraft.map((f, i) => (
-            <div key={i} className="flex items-center gap-2">
-              <input
-                className="flex-1 p-2 text-sm neumorphic-sunken border-none rounded-lg bg-surface"
-                placeholder="予定名"
-                value={f.title}
-                onChange={(e) => updateFixedEventRow(i, { title: e.target.value })}
-              />
-              <input
-                type="time"
-                className="p-2 text-sm neumorphic-sunken border-none rounded-lg bg-surface"
-                value={f.start}
-                onChange={(e) => updateFixedEventRow(i, { start: e.target.value })}
-              />
-              <span className="text-xs text-outline">〜</span>
-              <input
-                type="time"
-                className="p-2 text-sm neumorphic-sunken border-none rounded-lg bg-surface"
-                value={f.end}
-                onChange={(e) => updateFixedEventRow(i, { end: e.target.value })}
-              />
-              <button onClick={() => removeFixedEventRow(i)} className="text-outline hover:text-secondary">
-                <span className="material-symbols-outlined text-base">close</span>
-              </button>
-            </div>
-          ))}
-        </div>
+        <FixedEventEditor title="固定予定（カレンダー連携までの仮入力）" value={fixedEventsDraft} onChange={setFixedEventsDraft} />
         <div className="space-y-2 pt-2 border-t border-outline-variant/20">
-          <label className="text-xs font-bold text-outline">今日の終了予定時刻</label>
+          <label className="text-xs font-bold text-outline">{dayLabel}の終了予定時刻</label>
           <input
             type="time"
             className="p-2 text-sm neumorphic-sunken border-none rounded-lg bg-surface"
