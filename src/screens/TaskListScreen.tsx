@@ -1,8 +1,10 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
+import { Timestamp } from 'firebase/firestore'
 import { useAuth } from '../lib/AuthContext'
-import { subscribeScheduledTasks, type Task, type TaskStatus } from '../lib/tasks'
-import { subscribeActionsForTask, completeAction, completeTaskManually, type Action } from '../lib/actions'
+import { subscribeScheduledTasks, updateTaskDetails, type Task, type TaskStatus } from '../lib/tasks'
+import { subscribeActionsForTask, completeAction, completeTaskManually, overwriteAction, type Action } from '../lib/actions'
+import { formatDateKey } from '../lib/dateUtils'
 
 const statusLabel: Record<TaskStatus, string> = {
   inbox: '未整理',
@@ -21,9 +23,101 @@ const actionStatusLabel: Record<Action['status'], string> = {
 
 // 展開したときだけそのTaskのActionを購読する — 常時全Task×全Actionを
 // 購読すると、doneが溜まるにつれて重くなるため(「軽い一覧」の方針)。
+function ActionRow({ action, userId }: { action: Action; userId: string }) {
+  const [editing, setEditing] = useState(false)
+  const [title, setTitle] = useState('')
+  const [minutes, setMinutes] = useState('')
+  const [criteria, setCriteria] = useState('')
+
+  const startEdit = () => {
+    setTitle(action.title)
+    setMinutes(String(action.estimatedMinutes))
+    setCriteria(action.completionCriteria ?? '')
+    setEditing(true)
+  }
+
+  const save = async () => {
+    const mins = parseInt(minutes, 10)
+    if (!title.trim() || !mins || mins <= 0) return
+    await overwriteAction(action.id, title.trim(), mins, criteria.trim())
+    setEditing(false)
+  }
+
+  if (editing) {
+    return (
+      <div className="neumorphic-sunken rounded-lg p-2.5 space-y-2">
+        <input
+          className="w-full p-2 text-sm font-bold neumorphic-raised border-none rounded-lg bg-surface"
+          value={title}
+          onChange={(e) => setTitle(e.target.value)}
+          autoFocus
+        />
+        <input
+          className="w-full p-2 text-xs neumorphic-raised border-none rounded-lg bg-surface"
+          value={criteria}
+          onChange={(e) => setCriteria(e.target.value)}
+          placeholder="完了条件"
+        />
+        <div className="flex items-center gap-2">
+          <input
+            type="number"
+            min={1}
+            className="w-20 p-2 text-sm neumorphic-raised border-none rounded-lg bg-surface"
+            value={minutes}
+            onChange={(e) => setMinutes(e.target.value)}
+          />
+          <span className="text-xs text-on-surface-variant">分</span>
+          <div className="flex-1"></div>
+          <button onClick={() => setEditing(false)} className="px-3 py-1.5 rounded-full text-xs font-bold text-on-surface-variant">
+            Cancel
+          </button>
+          <button onClick={save} className="px-3 py-1.5 rounded-full text-xs font-bold bg-primary text-white">
+            Save
+          </button>
+        </div>
+      </div>
+    )
+  }
+
+  return (
+    <div className="flex items-center justify-between gap-2 neumorphic-sunken rounded-lg p-2.5">
+      <div className="min-w-0">
+        <p
+          className={`text-sm truncate ${
+            action.status === 'done' || action.status === 'skipped' ? 'text-on-surface-variant line-through' : 'text-on-surface font-bold'
+          }`}
+        >
+          {action.title}
+        </p>
+        <p className="text-[10px] text-outline">
+          {action.estimatedMinutes}分 ・ {actionStatusLabel[action.status]}
+        </p>
+      </div>
+      {(action.status === 'todo' || action.status === 'doing') && (
+        <div className="flex gap-3 flex-shrink-0">
+          <button onClick={startEdit} className="text-xs font-bold text-primary hover:underline">
+            編集
+          </button>
+          <button onClick={() => completeAction(action.id, action.taskId, userId)} className="text-xs font-bold text-primary hover:underline">
+            完了にする
+          </button>
+        </div>
+      )}
+    </div>
+  )
+}
+
+// 展開したときだけそのTaskのActionを購読する — 常時全Task×全Actionを
+// 購読すると、doneが溜まるにつれて重くなるため(「軽い一覧」の方針)。
 function TaskRow({ task, userId }: { task: Task; userId: string }) {
   const [expanded, setExpanded] = useState(false)
   const [actions, setActions] = useState<Action[]>([])
+
+  const [editingTask, setEditingTask] = useState(false)
+  const [editTitle, setEditTitle] = useState('')
+  const [editOutputGoal, setEditOutputGoal] = useState('')
+  const [editCurrentState, setEditCurrentState] = useState('')
+  const [editDeadline, setEditDeadline] = useState('')
 
   useEffect(() => {
     if (!expanded) return
@@ -35,6 +129,74 @@ function TaskRow({ task, userId }: { task: Task; userId: string }) {
   const handleCompleteTask = () => {
     if (!confirm(`「${task.title}」を完了にしますか？まだ終わっていないActionはスキップ扱いになります。`)) return
     completeTaskManually(userId, task.id)
+  }
+
+  const startEditTask = () => {
+    setEditTitle(task.title)
+    setEditOutputGoal(task.outputGoal ?? '')
+    setEditCurrentState(task.currentState ?? '')
+    setEditDeadline(task.deadline ? formatDateKey(task.deadline.toDate()) : '')
+    setEditingTask(true)
+  }
+
+  const saveEditTask = async () => {
+    if (!editTitle.trim()) return
+    await updateTaskDetails(task.id, {
+      title: editTitle.trim(),
+      outputGoal: editOutputGoal.trim(),
+      currentState: editCurrentState.trim(),
+      deadline: editDeadline ? Timestamp.fromDate(new Date(`${editDeadline}T23:59:59`)) : null,
+    })
+    setEditingTask(false)
+  }
+
+  if (editingTask) {
+    return (
+      <div className="neumorphic-raised bg-surface rounded-lg p-4 space-y-3">
+        <div className="space-y-2">
+          <label className="text-xs font-bold text-outline">タイトル</label>
+          <input
+            className="w-full p-2.5 text-sm font-bold neumorphic-sunken border-none rounded-lg bg-surface"
+            value={editTitle}
+            onChange={(e) => setEditTitle(e.target.value)}
+            autoFocus
+          />
+        </div>
+        <div className="space-y-2">
+          <label className="text-xs font-bold text-outline">完成イメージ（アウトプット）</label>
+          <textarea
+            className="w-full h-16 p-2.5 text-sm neumorphic-sunken border-none rounded-lg bg-surface resize-none"
+            value={editOutputGoal}
+            onChange={(e) => setEditOutputGoal(e.target.value)}
+          />
+        </div>
+        <div className="space-y-2">
+          <label className="text-xs font-bold text-outline">現在地（どこまで出来ているか）</label>
+          <textarea
+            className="w-full h-16 p-2.5 text-sm neumorphic-sunken border-none rounded-lg bg-surface resize-none"
+            value={editCurrentState}
+            onChange={(e) => setEditCurrentState(e.target.value)}
+          />
+        </div>
+        <div className="space-y-2">
+          <label className="text-xs font-bold text-outline">締切（任意）</label>
+          <input
+            type="date"
+            className="p-2.5 text-sm neumorphic-sunken border-none rounded-lg bg-surface"
+            value={editDeadline}
+            onChange={(e) => setEditDeadline(e.target.value)}
+          />
+        </div>
+        <div className="flex justify-end gap-3 pt-1">
+          <button onClick={() => setEditingTask(false)} className="px-4 py-2 rounded-full text-sm font-bold text-on-surface-variant">
+            Cancel
+          </button>
+          <button onClick={saveEditTask} className="px-4 py-2 rounded-full text-sm font-bold bg-primary text-white">
+            Save
+          </button>
+        </div>
+      </div>
+    )
   }
 
   return (
@@ -58,40 +220,21 @@ function TaskRow({ task, userId }: { task: Task; userId: string }) {
             )}
           </div>
         </button>
-        <button
-          onClick={handleCompleteTask}
-          className="text-xs font-bold text-primary hover:underline whitespace-nowrap flex-shrink-0 pt-0.5"
-        >
-          完了にする
-        </button>
+        <div className="flex gap-3 flex-shrink-0 pt-0.5">
+          <button onClick={startEditTask} className="text-xs font-bold text-primary hover:underline whitespace-nowrap">
+            編集
+          </button>
+          <button onClick={handleCompleteTask} className="text-xs font-bold text-primary hover:underline whitespace-nowrap">
+            完了にする
+          </button>
+        </div>
       </div>
 
       {expanded && (
         <div className="space-y-2 pt-2 border-t border-outline-variant/20">
           {actions.length === 0 && <p className="text-xs text-outline">Actionがありません。</p>}
           {actions.map((a) => (
-            <div key={a.id} className="flex items-center justify-between gap-2 neumorphic-sunken rounded-lg p-2.5">
-              <div className="min-w-0">
-                <p
-                  className={`text-sm truncate ${
-                    a.status === 'done' || a.status === 'skipped' ? 'text-on-surface-variant line-through' : 'text-on-surface font-bold'
-                  }`}
-                >
-                  {a.title}
-                </p>
-                <p className="text-[10px] text-outline">
-                  {a.estimatedMinutes}分 ・ {actionStatusLabel[a.status]}
-                </p>
-              </div>
-              {(a.status === 'todo' || a.status === 'doing') && (
-                <button
-                  onClick={() => completeAction(a.id, a.taskId, userId)}
-                  className="text-xs font-bold text-primary hover:underline flex-shrink-0"
-                >
-                  完了にする
-                </button>
-              )}
-            </div>
+            <ActionRow key={a.id} action={a} userId={userId} />
           ))}
         </div>
       )}

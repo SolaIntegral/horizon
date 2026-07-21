@@ -130,6 +130,17 @@ export async function savePlan(taskId: string, plan: TaskPlan) {
   await updateDoc(doc(db, 'tasks', taskId), updates)
 }
 
+// Edits an already-planned Task's own details without touching status —
+// unlike savePlan, which always forces status back to 'planned' (fine for
+// the initial inbox->planned transition, wrong for editing a Task that's
+// already in_progress/interrupted, since that would silently regress it).
+export async function updateTaskDetails(
+  taskId: string,
+  updates: { title: string; outputGoal: string; currentState: string; deadline: Timestamp | null },
+) {
+  await updateDoc(doc(db, 'tasks', taskId), { ...updates, updatedAt: serverTimestamp() })
+}
+
 export async function createPlannedTask(userId: string, originalInput: string, plan: TaskPlan): Promise<string> {
   const docRef = await addDoc(tasksCollection, {
     userId,
