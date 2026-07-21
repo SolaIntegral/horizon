@@ -5,11 +5,11 @@ import { useAuth } from '../lib/AuthContext'
 import { subscribeActiveActions, subscribeDoneActions, skipAction, overwriteAction, setActionDeferredTo, type Action } from '../lib/actions'
 import { subscribeScheduledTasks, type Task } from '../lib/tasks'
 import { subscribeActiveWorkSession, countInterruptions, type WorkSession } from '../lib/workSessions'
-import { subscribeDailyPlan, upsertDailyPlan, type DailyPlan } from '../lib/dailyPlans'
+import { subscribeDailyPlan, subscribeDailyPlansForWeek, upsertDailyPlan, type DailyPlan } from '../lib/dailyPlans'
 import { completeDailyReview } from '../lib/dailyReviews'
 import { getStatusMessage } from '../lib/statusMessages'
 import { computeDayPhase, selectCurrentMission } from '../lib/dayPhase'
-import { addDays, formatDateKey } from '../lib/dateUtils'
+import { addDays, formatDateKey, getWeekDays } from '../lib/dateUtils'
 import HelpButton from '../components/HelpButton'
 import MorningSetupForm from '../components/MorningSetupForm'
 
@@ -66,6 +66,12 @@ export default function TodayDashboard() {
   // §14.2: proactive replan suggestion, dismissed for the rest of this visit
   const [replanBannerDismissed, setReplanBannerDismissed] = useState(false)
 
+  // Week-not-planned nudge: a lightweight, dismiss-for-this-visit banner
+  // (not a blocking phase — planning ahead is optional, per the app's own
+  // "necessary the night before or that morning" philosophy).
+  const [weekPlans, setWeekPlans] = useState<Map<string, DailyPlan | null>>(new Map())
+  const [weekBannerDismissed, setWeekBannerDismissed] = useState(false)
+
   const [interruptionCount, setInterruptionCount] = useState(0)
 
   useEffect(() => {
@@ -83,6 +89,17 @@ export default function TodayDashboard() {
       unsub5()
     }
   }, [user, todayKey])
+
+  const restOfWeekKeys = useMemo(
+    () => getWeekDays(today).filter((d) => d.getTime() > today.getTime()).map(formatDateKey),
+    [today],
+  )
+
+  useEffect(() => {
+    if (!user || restOfWeekKeys.length === 0) return
+    return subscribeDailyPlansForWeek(user.uid, restOfWeekKeys, setWeekPlans)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [user, restOfWeekKeys])
 
   // Query params (?log=1 from the Hori menu, ?completed=... from Overlay's
   // Done button) are one-shot triggers — strip them from the URL once read
@@ -155,6 +172,17 @@ export default function TodayDashboard() {
     return projectedEnd > dailyPlan.dayEndTime.toDate()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [dailyPlan, remainingEstimateMinutes, tick])
+
+  // Only judge once every remaining day of the week has reported at least
+  // one snapshot — otherwise the still-loading empty Map would flash "not
+  // planned" even for a week that's actually fully planned.
+  const weekNeedsPlanning = useMemo(() => {
+    if (restOfWeekKeys.length === 0 || weekPlans.size < restOfWeekKeys.length) return false
+    return restOfWeekKeys.some((key) => {
+      const plan = weekPlans.get(key)
+      return !plan || plan.plannedSlots.length === 0
+    })
+  }, [restOfWeekKeys, weekPlans])
 
   const taskIdsWithActiveAction = useMemo(() => new Set(activeActions.map((a) => a.taskId)), [activeActions])
 
@@ -321,6 +349,23 @@ export default function TodayDashboard() {
           <p className="text-lg text-on-surface-variant">{todayLabel}</p>
         </header>
 
+        {weekNeedsPlanning && !weekBannerDismissed && (
+          <div className="neumorphic-raised rounded-xl p-4 bg-primary/5 border border-primary/20 flex flex-wrap items-center justify-between gap-3">
+            <p className="text-sm font-bold text-primary">今週の残りの予定がまだ埋まっていません。</p>
+            <div className="flex gap-2">
+              <button
+                onClick={() => setWeekBannerDismissed(true)}
+                className="text-xs font-bold text-on-surface-variant hover:text-primary"
+              >
+                閉じる
+              </button>
+              <Link to="/plan/week" className="btn-squish neumorphic-raised bg-primary text-white px-4 py-1.5 rounded-full text-xs font-bold">
+                週の予定を立てる
+              </Link>
+            </div>
+          </div>
+        )}
+
         {completedBanner && (
           <div className="neumorphic-raised rounded-xl p-4 bg-primary/10 border border-primary/20 space-y-3">
             <div className="flex items-center justify-between">
@@ -390,7 +435,7 @@ export default function TodayDashboard() {
               >
                 今日を振り返る
               </button>
-              <Link to="/plan" className="btn-squish neumorphic-raised bg-surface text-primary font-bold py-3 px-6 rounded-full">
+              <Link to="/plan?tab=tomorrow" className="btn-squish neumorphic-raised bg-surface text-primary font-bold py-3 px-6 rounded-full">
                 明日の計画を確認する
               </Link>
               <button
@@ -462,15 +507,20 @@ export default function TodayDashboard() {
 
         {(dayPhase === 'working' || dayPhase === 'break' || dayPhase === 'mission_ready') && currentAction && (
           <div className="neumorphic-raised rounded-2xl p-8 bg-surface space-y-6 ring-4 ring-primary/5">
-            <div className="flex items-center gap-2">
-              <div
-                className={`w-3 h-3 rounded-full ${dayPhase === 'break' ? 'bg-secondary' : 'bg-primary'} ${
-                  dayPhase === 'working' ? 'pulse' : ''
-                }`}
-              ></div>
-              <span className="text-sm font-bold text-primary">
-                {dayPhase === 'break' ? '休憩中' : dayPhase === 'working' ? '作業中' : '次のミッション'}
-              </span>
+            <div className="flex items-center justify-between gap-2">
+              <div className="flex items-center gap-2">
+                <div
+                  className={`w-3 h-3 rounded-full ${dayPhase === 'break' ? 'bg-secondary' : 'bg-primary'} ${
+                    dayPhase === 'working' ? 'pulse' : ''
+                  }`}
+                ></div>
+                <span className="text-sm font-bold text-primary">
+                  {dayPhase === 'break' ? '休憩中' : dayPhase === 'working' ? '作業中' : '次のミッション'}
+                </span>
+              </div>
+              <Link to="/plan?replan=1" className="text-xs font-bold text-on-surface-variant hover:text-primary">
+                予定を確認する
+              </Link>
             </div>
 
             <div className="flex items-start gap-4">
