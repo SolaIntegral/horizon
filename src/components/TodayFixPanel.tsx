@@ -4,29 +4,38 @@ import { useAuth } from '../lib/AuthContext'
 import { subscribeActiveActions, createAction, overwriteAction, deleteAction, type Action } from '../lib/actions'
 import { subscribeScheduledTasks, isTaskBlocked, type Task } from '../lib/tasks'
 import { subscribeDailyPlan, upsertDailyPlan, type DailyPlan } from '../lib/dailyPlans'
-import { formatDateKey } from '../lib/dateUtils'
+import { formatDateKey, getWeekDays, isSameDay, combineDateAndTime } from '../lib/dateUtils'
+import { subscribeUserSettings, DEFAULT_WEEKDAY_SCHEDULE, type WeekdayScheduleMap } from '../lib/userSettings'
 
 // A deliberately low-traffic escape hatch for the rare case where AI got a
 // Mission wrong or something needs an irregular manual fix — reached only
-// via the settings-gear menu, not Today's main flow.
-export default function TodayFixPanel({ onClose }: { onClose: () => void }) {
+// via the settings-gear menu, not Today's main flow. `initialDate` lets it
+// also serve mid-week new-task insertion into any day of the current week,
+// not just today.
+export default function TodayFixPanel({ onClose, initialDate }: { onClose: () => void; initialDate?: Date }) {
   const { user } = useAuth()
-  const today = useMemo(() => new Date(), [])
-  const todayKey = formatDateKey(today)
+  const [selectedDate, setSelectedDate] = useState(() => initialDate ?? new Date())
+  const todayKey = formatDateKey(selectedDate)
+  const weekDays = useMemo(() => getWeekDays(selectedDate), [selectedDate])
 
   const [activeActions, setActiveActions] = useState<Action[]>([])
   const [scheduledTasks, setScheduledTasks] = useState<Task[]>([])
   const [dailyPlan, setDailyPlan] = useState<DailyPlan | null>(null)
+  const [weekdaySchedule, setWeekdaySchedule] = useState<WeekdayScheduleMap>(DEFAULT_WEEKDAY_SCHEDULE)
 
   useEffect(() => {
     if (!user) return
     const unsub1 = subscribeActiveActions(user.uid, setActiveActions)
     const unsub2 = subscribeScheduledTasks(user.uid, setScheduledTasks)
     const unsub3 = subscribeDailyPlan(user.uid, todayKey, setDailyPlan)
+    const unsub4 = subscribeUserSettings(user.uid, (settings) => {
+      if (settings?.weekdaySchedule) setWeekdaySchedule(settings.weekdaySchedule)
+    })
     return () => {
       unsub1()
       unsub2()
       unsub3()
+      unsub4()
     }
   }, [user, todayKey])
 
@@ -100,13 +109,18 @@ export default function TodayFixPanel({ onClose }: { onClose: () => void }) {
     })
 
     if (dailyPlan) {
-      // Slot it in right after whatever's already scheduled (or now, if
-      // that's later) — simple placement, not a full re-run of the
-      // scheduling engine, since this is meant to be a rare manual fix.
+      // Slot it in right after whatever's already scheduled — simple
+      // placement, not a full re-run of the scheduling engine, since this is
+      // meant to be a rare manual fix. The floor for an empty day is "now"
+      // only when the selected day is today; a future day has no "now" to
+      // anchor to, so fall back to that weekday's configured start time.
+      const floor = isSameDay(selectedDate, new Date())
+        ? new Date()
+        : combineDateAndTime(selectedDate, (weekdaySchedule[String(selectedDate.getDay())] ?? DEFAULT_WEEKDAY_SCHEDULE[String(selectedDate.getDay())]).start)
       const lastEnd = dailyPlan.plannedSlots.reduce((latest, s) => {
         const end = s.end.toDate()
         return end > latest ? end : latest
-      }, new Date())
+      }, floor)
       const end = new Date(lastEnd.getTime() + minutes * 60000)
       await upsertDailyPlan(user.uid, todayKey, {
         selectedActionIds: [...dailyPlan.selectedActionIds, newActionId],
@@ -120,10 +134,10 @@ export default function TodayFixPanel({ onClose }: { onClose: () => void }) {
     <div className="fixed inset-0 z-[60]">
       <div className="absolute inset-0 bg-black/40 backdrop-blur-[1px]" onClick={onClose}></div>
       <div className="absolute bottom-0 inset-x-0 max-h-[88vh] rounded-t-2xl md:top-0 md:bottom-0 md:right-0 md:left-auto md:inset-x-auto md:max-h-none md:h-full md:w-[520px] md:rounded-l-2xl md:rounded-t-none bg-surface shadow-2xl flex flex-col overflow-hidden">
-        <div className="p-6 border-b border-outline-variant/20 flex-shrink-0">
+        <div className="p-6 border-b border-outline-variant/20 flex-shrink-0 space-y-4">
           <div className="flex justify-between items-start">
             <div>
-              <h2 className="text-xl font-bold text-on-surface">今日のミッションを修正</h2>
+              <h2 className="text-xl font-bold text-on-surface">ミッションを修正</h2>
               <p className="text-sm text-on-surface-variant">AIの分割が違う・イレギュラーがあったときの修正用です</p>
             </div>
             <button
@@ -133,10 +147,29 @@ export default function TodayFixPanel({ onClose }: { onClose: () => void }) {
               <span className="material-symbols-outlined text-on-surface-variant">close</span>
             </button>
           </div>
+          <div className="flex gap-1.5">
+            {weekDays.map((d) => (
+              <button
+                key={formatDateKey(d)}
+                onClick={() => setSelectedDate(d)}
+                className={`flex-1 py-2 rounded-lg text-xs font-bold ${
+                  isSameDay(d, selectedDate) ? 'neumorphic-sunken text-primary' : 'neumorphic-raised text-on-surface-variant'
+                }`}
+              >
+                {d.toLocaleDateString('ja-JP', { weekday: 'short' })}
+                <br />
+                {d.getDate()}
+              </button>
+            ))}
+          </div>
         </div>
 
         <div className="flex-1 overflow-y-auto p-6 space-y-4">
-          {todaysActions.length === 0 && <p className="text-sm text-on-surface-variant text-center py-8">今日のActionはまだありません。</p>}
+          {todaysActions.length === 0 && (
+            <p className="text-sm text-on-surface-variant text-center py-8">
+              {selectedDate.toLocaleDateString('ja-JP', { month: 'long', day: 'numeric', weekday: 'short' })}にはActionがまだありません。
+            </p>
+          )}
 
           {todaysActions.map((a) => (
             <div key={a.id} className="neumorphic-raised bg-surface rounded-lg p-4 space-y-2">
