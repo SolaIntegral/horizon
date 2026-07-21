@@ -10,6 +10,7 @@ import DiagnoseScreen from './screens/DiagnoseScreen'
 import BatchDiagnoseScreen from './screens/BatchDiagnoseScreen'
 import DailyPlanScreen from './screens/DailyPlanScreen'
 import WeeklyPlanScreen from './screens/WeeklyPlanScreen'
+import TaskListScreen from './screens/TaskListScreen'
 import OverlayScreen from './screens/OverlayScreen'
 import GrowthScreen from './screens/GrowthScreen'
 import IdeaBoardScreen from './screens/IdeaBoardScreen'
@@ -32,6 +33,7 @@ function App() {
               <Route path="/diagnose-batch" element={<BatchDiagnoseScreen />} />
               <Route path="/plan" element={<DailyPlanScreen />} />
               <Route path="/plan/week" element={<WeeklyPlanScreen />} />
+              <Route path="/tasks" element={<TaskListScreen />} />
               <Route path="/overlay" element={<OverlayScreen />} />
               <Route path="/overlay/:taskId/:actionId" element={<OverlayScreen />} />
               <Route path="/growth" element={<GrowthScreen />} />

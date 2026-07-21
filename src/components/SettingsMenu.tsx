@@ -29,6 +29,14 @@ export default function SettingsMenu() {
               <span className="material-symbols-outlined text-lg">auto_stories</span>
               Growth
             </Link>
+            <Link
+              to="/tasks"
+              onClick={() => setOpen(false)}
+              className="w-full flex items-center gap-2 text-left px-3 py-2 rounded-lg text-sm font-semibold hover:bg-surface-container-high"
+            >
+              <span className="material-symbols-outlined text-lg">checklist</span>
+              タスク一覧
+            </Link>
             <button
               onClick={() => {
                 setTodayFixOpen(true)

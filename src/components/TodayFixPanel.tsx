@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Timestamp } from 'firebase/firestore'
 import { useAuth } from '../lib/AuthContext'
-import { subscribeActiveActions, createAction, overwriteAction, deleteAction, type Action } from '../lib/actions'
+import { subscribeActiveActions, createAction, overwriteAction, deleteAction, completeAction, type Action } from '../lib/actions'
 import { subscribeScheduledTasks, isTaskBlocked, type Task } from '../lib/tasks'
 import { subscribeDailyPlan, upsertDailyPlan, type DailyPlan } from '../lib/dailyPlans'
 import { formatDateKey, getWeekDays, isSameDay, combineDateAndTime } from '../lib/dateUtils'
@@ -213,6 +213,12 @@ export default function TodayFixPanel({ onClose, initialDate }: { onClose: () =>
                   <div className="flex items-center justify-between pt-1">
                     <span className="text-xs text-outline">{a.estimatedMinutes}分</span>
                     <div className="flex gap-3">
+                      <button
+                        onClick={() => user && completeAction(a.id, a.taskId, user.uid)}
+                        className="text-xs font-bold text-primary hover:underline"
+                      >
+                        完了にする
+                      </button>
                       <button onClick={() => startEdit(a)} className="text-xs font-bold text-primary hover:underline">
                         編集
                       </button>

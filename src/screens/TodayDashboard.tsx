@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { Link, useNavigate, useSearchParams } from 'react-router-dom'
 import { Timestamp } from 'firebase/firestore'
 import { useAuth } from '../lib/AuthContext'
-import { subscribeActiveActions, subscribeDoneActions, skipAction, overwriteAction, setActionDeferredTo, type Action } from '../lib/actions'
+import { subscribeActiveActions, subscribeDoneActions, skipAction, overwriteAction, setActionDeferredTo, completeAction, type Action } from '../lib/actions'
 import { subscribeScheduledTasks, type Task } from '../lib/tasks'
 import { subscribeActiveWorkSession, countInterruptions, type WorkSession } from '../lib/workSessions'
 import { subscribeDailyPlan, subscribeDailyPlansForWeek, upsertDailyPlan, type DailyPlan } from '../lib/dailyPlans'
@@ -695,15 +695,33 @@ export default function TodayDashboard() {
                   status === 'current' ? 'neumorphic-raised ring-2 ring-primary/20' : 'neumorphic-sunken'
                 }`}
               >
-                <div
-                  className={`w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0 ${
-                    status === 'done' ? 'bg-primary text-white' : status === 'current' ? 'bg-primary/20 text-primary' : 'bg-surface-container text-outline'
-                  }`}
-                >
-                  <span className="material-symbols-outlined text-base">
-                    {status === 'done' ? 'check' : status === 'current' ? 'play_arrow' : 'schedule'}
-                  </span>
-                </div>
+                {status === 'done' ? (
+                  <div className="w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0 bg-primary text-white">
+                    <span className="material-symbols-outlined text-base">check</span>
+                  </div>
+                ) : action ? (
+                  <button
+                    onClick={() => user && completeAction(action.id, action.taskId, user.uid)}
+                    title="完了にする"
+                    className={`w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0 hover:bg-primary hover:text-white transition-colors ${
+                      status === 'current' ? 'bg-primary/20 text-primary' : 'bg-surface-container text-outline'
+                    }`}
+                  >
+                    <span className="material-symbols-outlined text-base">
+                      {status === 'current' ? 'play_arrow' : 'schedule'}
+                    </span>
+                  </button>
+                ) : (
+                  <div
+                    className={`w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0 ${
+                      status === 'current' ? 'bg-primary/20 text-primary' : 'bg-surface-container text-outline'
+                    }`}
+                  >
+                    <span className="material-symbols-outlined text-base">
+                      {status === 'current' ? 'play_arrow' : 'schedule'}
+                    </span>
+                  </div>
+                )}
                 <div className="flex-1 min-w-0">
                   <p className={`text-sm font-bold truncate ${status === 'done' ? 'text-on-surface-variant line-through' : 'text-on-surface'}`}>
                     {action?.title ?? '(削除されたAction)'}
