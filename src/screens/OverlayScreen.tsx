@@ -257,7 +257,7 @@ export default function OverlayScreen() {
     const actualMinutes = currentElapsedMinutes()
     if (sessionId) await completeWorkSession(sessionId, taskId, actualMinutes, note ? { trigger: 'done', note } : undefined)
     if (note) processSessionNoteWithAI(sessionId!, note, action.title, actionId)
-    await completeAction(actionId)
+    await completeAction(actionId, taskId, user.uid)
     const isEarly = actualMinutes >= 1 && actualMinutes < action.estimatedMinutes * EARLY_FINISH_RATIO
     navigate(`/?completed=${encodeURIComponent(action.title)}${isEarly ? '&early=1' : ''}`)
   }

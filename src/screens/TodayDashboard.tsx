@@ -231,7 +231,8 @@ export default function TodayDashboard() {
   const todayLabel = today.toLocaleDateString('en-US', { weekday: 'long', month: 'short', day: 'numeric' })
 
   const handleSkip = async (action: Action) => {
-    await skipAction(action.id, action.taskId)
+    if (!user) return
+    await skipAction(action.id, action.taskId, user.uid)
   }
 
   const startEdit = (action: Action) => {

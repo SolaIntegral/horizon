@@ -4,6 +4,7 @@ import {
   deleteDoc,
   doc,
   getDoc,
+  getDocs,
   increment,
   onSnapshot,
   orderBy,
@@ -11,11 +12,12 @@ import {
   updateDoc,
   serverTimestamp,
   where,
+  writeBatch,
   Timestamp,
   type Unsubscribe,
 } from 'firebase/firestore'
 import { db } from './firebase'
-import { addEstimatedMinutes } from './tasks'
+import { addEstimatedMinutes, markTaskDone } from './tasks'
 
 export type ActionStatus = 'todo' | 'doing' | 'done' | 'skipped'
 
@@ -92,9 +94,60 @@ export function subscribeDoneActions(userId: string, callback: (actions: Action[
   )
 }
 
-export async function skipAction(actionId: string, taskId: string) {
+// If a Task has no todo/doing Actions left (all done or skipped), it's
+// finished — auto-complete it so it doesn't linger forever with nothing
+// left to do. Firestore's list-query rule validation only trusts the
+// query's own equality filters (not real-world data guarantees), so a
+// taskId-only query is rejected as "insufficient permissions" even though
+// every action for a given taskId always belongs to one user — userId must
+// be filtered explicitly too, same as every other query in this codebase.
+async function maybeAutoCompleteTask(userId: string, taskId: string) {
+  const snap = await getDocs(query(collection(db, 'actions'), where('userId', '==', userId), where('taskId', '==', taskId)))
+  const stillActive = snap.docs.some((d) => {
+    const status = d.data().status as ActionStatus
+    return status === 'todo' || status === 'doing'
+  })
+  if (!stillActive) await markTaskDone(taskId)
+}
+
+export async function skipAction(actionId: string, taskId: string, userId: string) {
   await updateDoc(doc(db, 'actions', actionId), { status: 'skipped' satisfies ActionStatus, updatedAt: serverTimestamp() })
   await updateDoc(doc(db, 'tasks', taskId), { skipCount: increment(1), updatedAt: serverTimestamp() })
+  await maybeAutoCompleteTask(userId, taskId)
+}
+
+// Manually closes out a Task in one step, for when the user doesn't want to
+// tick off each remaining Action individually. Any Actions still todo/doing
+// are marked skipped rather than done — they weren't actually worked, and
+// marking them done would misrepresent real completion for future
+// estimate-vs-actual analysis (same reasoning as the existing skipAction).
+export async function completeTaskManually(userId: string, taskId: string) {
+  const snap = await getDocs(query(collection(db, 'actions'), where('userId', '==', userId), where('taskId', '==', taskId)))
+  const batch = writeBatch(db)
+  snap.docs.forEach((d) => {
+    const status = d.data().status as ActionStatus
+    if (status === 'todo' || status === 'doing') {
+      batch.update(d.ref, { status: 'skipped' satisfies ActionStatus, updatedAt: serverTimestamp() })
+    }
+  })
+  await batch.commit()
+  await markTaskDone(taskId)
+}
+
+// All Actions for a single Task, any status — for the Task list screen's
+// expanded view. userId is included (redundant with taskId ownership) to
+// match this codebase's convention of always scoping queries by userId.
+export function subscribeActionsForTask(userId: string, taskId: string, callback: (actions: Action[]) => void): Unsubscribe {
+  const q = query(collection(db, 'actions'), where('userId', '==', userId), where('taskId', '==', taskId))
+  return onSnapshot(
+    q,
+    (snapshot) => {
+      const actions = snapshot.docs.map((d) => ({ id: d.id, ...d.data() }) as Action)
+      actions.sort((a, b) => (a.createdAt?.toMillis() ?? 0) - (b.createdAt?.toMillis() ?? 0))
+      callback(actions)
+    },
+    (err) => console.error('[subscribeActionsForTask]', err.code, err.message),
+  )
 }
 
 export async function getAction(actionId: string): Promise<Action | null> {
@@ -111,12 +164,13 @@ export async function startAction(actionId: string) {
   })
 }
 
-export async function completeAction(actionId: string) {
+export async function completeAction(actionId: string, taskId: string, userId: string) {
   await updateDoc(doc(db, 'actions', actionId), {
     status: 'done' satisfies ActionStatus,
     completedAt: serverTimestamp(),
     updatedAt: serverTimestamp(),
   })
+  await maybeAutoCompleteTask(userId, taskId)
 }
 
 export async function overwriteAction(actionId: string, title: string, estimatedMinutes: number, completionCriteria?: string) {
