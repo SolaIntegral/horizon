@@ -137,7 +137,7 @@ export default function TodayFixPanel({ onClose, initialDate }: { onClose: () =>
         <div className="p-6 border-b border-outline-variant/20 flex-shrink-0 space-y-4">
           <div className="flex justify-between items-start">
             <div>
-              <h2 className="text-xl font-bold text-on-surface">ミッションを修正</h2>
+              <h2 className="text-xl font-bold text-on-surface">Focusを修正</h2>
               <p className="text-sm text-on-surface-variant">AIの分割が違う・イレギュラーがあったときの修正用です</p>
             </div>
             <button

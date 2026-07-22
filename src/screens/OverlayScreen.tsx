@@ -722,7 +722,7 @@ export default function OverlayScreen() {
                     進捗を記録して休憩する
                   </button>
                   <button onClick={handleSplitRemaining} className="w-full py-3 neumorphic-raised rounded-full text-sm font-bold">
-                    残りを新しいMissionへ分ける
+                    残りを新しいFocusへ分ける
                   </button>
                 </div>
                 <button onClick={() => setOvertimePrompt('choice')} className="w-full text-sm font-bold text-on-surface-variant hover:text-primary">
@@ -746,7 +746,7 @@ export default function OverlayScreen() {
                     最初の一歩へ分割する
                   </button>
                   <button onClick={handleSwitchMissionFromOvertime} className="w-full py-3 neumorphic-raised rounded-full text-sm font-bold">
-                    別Missionへ切り替える
+                    別Focusへ切り替える
                   </button>
                   <button onClick={handleRecordAndBreakFromOvertime} className="w-full py-3 neumorphic-raised rounded-full text-sm font-bold">
                     休憩する
@@ -800,10 +800,10 @@ export default function OverlayScreen() {
                     5分だけ再開する
                   </button>
                   <button onClick={handleShrinkMissionFromBreak} className="w-full py-3 neumorphic-raised rounded-full text-sm font-bold">
-                    Missionを小さくする
+                    Focusを小さくする
                   </button>
                   <button onClick={handleSwitchToLighterMission} className="w-full py-3 neumorphic-raised rounded-full text-sm font-bold">
-                    軽いMissionへ変更する
+                    軽いFocusへ変更する
                   </button>
                   <button onClick={handleReplanFromBreak} className="w-full py-3 neumorphic-raised rounded-full text-sm font-bold">
                     残りの予定を組み直す

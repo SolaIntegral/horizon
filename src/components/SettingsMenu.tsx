@@ -45,7 +45,7 @@ export default function SettingsMenu() {
               className="w-full flex items-center gap-2 text-left px-3 py-2 rounded-lg text-sm font-semibold hover:bg-surface-container-high"
             >
               <span className="material-symbols-outlined text-lg">build</span>
-              ミッションを修正
+              Focusを修正
             </button>
           </div>
         )}

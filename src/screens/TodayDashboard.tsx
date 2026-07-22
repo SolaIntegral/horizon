@@ -4,26 +4,13 @@ import { Timestamp } from 'firebase/firestore'
 import { useAuth } from '../lib/AuthContext'
 import { subscribeActiveActions, subscribeDoneActions, skipAction, overwriteAction, setActionDeferredTo, completeAction, type Action } from '../lib/actions'
 import { subscribeScheduledTasks, type Task } from '../lib/tasks'
-import { subscribeActiveWorkSession, countInterruptions, type WorkSession } from '../lib/workSessions'
+import { subscribeActiveWorkSession, completeWorkSession, endWorkSession, type WorkSession } from '../lib/workSessions'
 import { subscribeDailyPlan, subscribeDailyPlansForWeek, upsertDailyPlan, type DailyPlan } from '../lib/dailyPlans'
 import { completeDailyReview } from '../lib/dailyReviews'
-import { getStatusMessage } from '../lib/statusMessages'
 import { computeDayPhase, selectCurrentMission } from '../lib/dayPhase'
 import { addDays, formatDateKey, getWeekDays } from '../lib/dateUtils'
 import HelpButton from '../components/HelpButton'
 import MorningSetupForm from '../components/MorningSetupForm'
-
-function isWithinDays(date: Date, days: number): boolean {
-  const diffMs = date.getTime() - Date.now()
-  return diffMs >= 0 && diffMs <= days * 24 * 60 * 60 * 1000
-}
-
-function isToday(date: Date): boolean {
-  const now = new Date()
-  return (
-    date.getFullYear() === now.getFullYear() && date.getMonth() === now.getMonth() && date.getDate() === now.getDate()
-  )
-}
 
 function formatTime(d: Date): string {
   return d.toLocaleTimeString('ja-JP', { hour: '2-digit', minute: '2-digit' })
@@ -71,8 +58,6 @@ export default function TodayDashboard() {
   // "necessary the night before or that morning" philosophy).
   const [weekPlans, setWeekPlans] = useState<Map<string, DailyPlan | null>>(new Map())
   const [weekBannerDismissed, setWeekBannerDismissed] = useState(false)
-
-  const [interruptionCount, setInterruptionCount] = useState(0)
 
   useEffect(() => {
     if (!user) return
@@ -131,29 +116,41 @@ export default function TodayDashboard() {
 
   const currentMissionSlot = useMemo(() => selectCurrentMission(dailyPlan, actionsById), [dailyPlan, actionsById])
 
-  // An active session takes priority over slot order (§2 of the design doc):
-  // if the user is mid-focus/break, that's the current Mission regardless of
-  // where it sits in today's plan.
-  const currentActionId = activeSession?.actionId ?? currentMissionSlot?.actionId ?? null
+  // The schedule-derived slot is only a suggestion — the user can manually
+  // point Today at a different already-scheduled Action instead (session-only
+  // override, never written back to the DailyPlan itself). An active
+  // WorkSession still wins over everything, since by definition that's
+  // whatever the user is actually doing right now.
+  const [manualCurrentActionId, setManualCurrentActionId] = useState<string | null>(null)
+  const [switcherOpen, setSwitcherOpen] = useState(false)
+
+  const currentActionId = activeSession?.actionId ?? manualCurrentActionId ?? currentMissionSlot?.actionId ?? null
   const currentAction = currentActionId ? actionsById.get(currentActionId) ?? null : null
   const currentSlot = dailyPlan?.plannedSlots.find((s) => s.actionId === currentActionId) ?? null
 
+  // Other not-yet-finished Actions already in today's plan — what the "別の
+  // Actionにする" switcher offers. Scoped to today's schedule (not every
+  // active Action in the app) so switching can never silently pull in
+  // something nobody planned for today.
+  const switchableActions = useMemo(() => {
+    if (!dailyPlan) return []
+    return dailyPlan.plannedSlots
+      .map((s) => actionsById.get(s.actionId))
+      .filter((a): a is Action => !!a && a.id !== currentActionId && a.status !== 'done' && a.status !== 'skipped')
+  }, [dailyPlan, actionsById, currentActionId])
+
+  const handleSwitchToAction = async (action: Action) => {
+    if (!user) return
+    if (activeSession) {
+      const elapsedMinutes = (Date.now() - activeSession.startedAt.toDate().getTime()) / 60000
+      await endWorkSession(activeSession.id, activeSession.taskId, elapsedMinutes)
+    }
+    setManualCurrentActionId(action.id)
+    setSwitcherOpen(false)
+  }
+
   const isMissionOverdue =
     dayPhase === 'mission_ready' && !!currentSlot && new Date() > currentSlot.start.toDate() && !activeSession
-
-  useEffect(() => {
-    if (!user || !currentActionId) {
-      setInterruptionCount(0)
-      return
-    }
-    let cancelled = false
-    countInterruptions(user.uid, currentActionId).then((n) => {
-      if (!cancelled) setInterruptionCount(n)
-    })
-    return () => {
-      cancelled = true
-    }
-  }, [user, currentActionId])
 
   // §14.2: Hori-initiated proactive replan — if the remaining estimated work
   // wouldn't fit before today's end time, offer to reflow the schedule.
@@ -176,63 +173,39 @@ export default function TodayDashboard() {
   // Only judge once every remaining day of the week has reported at least
   // one snapshot — otherwise the still-loading empty Map would flash "not
   // planned" even for a week that's actually fully planned.
+  //
+  // Checks doc *existence*, not `plannedSlots.length` — a day the weekly
+  // planner ran over but genuinely had nothing left to assign still gets a
+  // DailyPlan doc written (with an empty plannedSlots array). Treating an
+  // intentionally-empty day as "unplanned" made this banner refuse to go
+  // away after actually completing weekly planning whenever the week held
+  // more days than there were candidate Actions to fill them.
   const weekNeedsPlanning = useMemo(() => {
     if (restOfWeekKeys.length === 0 || weekPlans.size < restOfWeekKeys.length) return false
-    return restOfWeekKeys.some((key) => {
-      const plan = weekPlans.get(key)
-      return !plan || plan.plannedSlots.length === 0
-    })
+    return restOfWeekKeys.some((key) => !weekPlans.get(key))
   }, [restOfWeekKeys, weekPlans])
-
-  const taskIdsWithActiveAction = useMemo(() => new Set(activeActions.map((a) => a.taskId)), [activeActions])
-
-  const completedActionsToday = useMemo(
-    () => doneActions.filter((a) => a.completedAt && isToday(a.completedAt.toDate())).length,
-    [doneActions],
-  )
-
-  const tasksNearDeadlineUndecomposed = useMemo(
-    () =>
-      scheduledTasks.filter(
-        (t) => t.deadline && isWithinDays(t.deadline.toDate(), 3) && !taskIdsWithActiveAction.has(t.id),
-      ).length,
-    [scheduledTasks, taskIdsWithActiveAction],
-  )
-
-  const totalActiveMinutes = useMemo(
-    () => activeActions.reduce((sum, a) => sum + (a.estimatedMinutes || 0), 0),
-    [activeActions],
-  )
-
-  const maxSkipCount = useMemo(
-    () => scheduledTasks.reduce((max, t) => Math.max(max, t.skipCount ?? 0), 0),
-    [scheduledTasks],
-  )
-
-  const statusMessage = useMemo(
-    () =>
-      getStatusMessage({
-        completedActionsToday,
-        tasksNearDeadlineUndecomposed,
-        totalActiveMinutes,
-        maxSkipCount,
-        activeSession: activeSession
-          ? {
-              type: activeSession.type,
-              elapsedMinutes: (Date.now() - activeSession.startedAt.toDate().getTime()) / 60000,
-              plannedMinutes: activeSession.plannedMinutes,
-            }
-          : null,
-      }),
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [completedActionsToday, tasksNearDeadlineUndecomposed, totalActiveMinutes, maxSkipCount, activeSession, tick],
-  )
 
   const todayLabel = today.toLocaleDateString('en-US', { weekday: 'long', month: 'short', day: 'numeric' })
 
   const handleSkip = async (action: Action) => {
     if (!user) return
     await skipAction(action.id, action.taskId, user.uid)
+    if (manualCurrentActionId === action.id) setManualCurrentActionId(null)
+  }
+
+  // Marks an Action done from Today directly (Focus card / log), not just via
+  // Overlay's own "完了" button. If a WorkSession is actively running for
+  // this Action, it has to be closed out first — otherwise it's left
+  // dangling ("active" forever, no actualMinutes recorded, and dayPhase
+  // would keep reporting 'working' for an Action that's already done).
+  const handleCompleteAction = async (action: Action) => {
+    if (!user) return
+    if (activeSession && activeSession.actionId === action.id) {
+      const elapsedMinutes = (Date.now() - activeSession.startedAt.toDate().getTime()) / 60000
+      await completeWorkSession(activeSession.id, action.taskId, elapsedMinutes)
+    }
+    await completeAction(action.id, action.taskId, user.uid)
+    if (manualCurrentActionId === action.id) setManualCurrentActionId(null)
   }
 
   const startEdit = (action: Action) => {
@@ -339,11 +312,11 @@ export default function TodayDashboard() {
           <div className="flex items-center gap-2">
             <h2 className="text-3xl font-bold text-primary tracking-tight">Today</h2>
             <HelpButton title="Todayの使い方">
-              <p>今、進めるべきミッション（Action）を1つだけ表示する画面です。</p>
+              <p>今、進めるべきFocus（Action）を1つだけ表示する画面です。</p>
               <p>
                 今日のPlanで選んだActionが、開始時刻の早いものから順に1つずつ表示されます。作業中・休憩中はその内容がそのまま表示され、実際のWorkSessionと連動します。
               </p>
-              <p>「今日のミッションを見る」で、今日1日の流れ（完了済み・現在・これから）を確認できます。</p>
+              <p>「今日のFocusを見る」で、今日1日の流れ（完了済み・現在・これから）を確認できます。</p>
               <p>タスクの追加・アイデアの記録・今日の計画の見直しは、右下のHoriメニューから行えます。</p>
             </HelpButton>
           </div>
@@ -394,7 +367,7 @@ export default function TodayDashboard() {
                   onClick={handleBringForwardNext}
                   className="btn-squish neumorphic-raised bg-primary text-white px-4 py-1.5 rounded-full text-xs font-bold"
                 >
-                  次のMissionを前倒しする
+                  次のFocusを前倒しする
                 </button>
               </div>
             )}
@@ -516,7 +489,7 @@ export default function TodayDashboard() {
                   }`}
                 ></div>
                 <span className="text-sm font-bold text-primary">
-                  {dayPhase === 'break' ? '休憩中' : dayPhase === 'working' ? '作業中' : '次のミッション'}
+                  {dayPhase === 'break' ? '休憩中' : dayPhase === 'working' ? '作業中' : '次のFocus'}
                 </span>
               </div>
               <Link to="/plan?replan=1" className="text-xs font-bold text-on-surface-variant hover:text-primary">
@@ -524,11 +497,34 @@ export default function TodayDashboard() {
               </Link>
             </div>
 
-            <div className="flex items-start gap-4">
+            <div className="flex items-start justify-between gap-4">
               <span className="text-xs text-on-surface-variant bg-surface-container-highest px-3 py-1 rounded-full font-bold">
                 {currentAction.taskTitle}
               </span>
+              {switchableActions.length > 0 && (
+                <button
+                  onClick={() => setSwitcherOpen((v) => !v)}
+                  className="text-xs font-bold text-on-surface-variant hover:text-primary flex-shrink-0"
+                >
+                  別のActionにする
+                </button>
+              )}
             </div>
+
+            {switcherOpen && (
+              <div className="neumorphic-sunken rounded-lg p-2 space-y-1">
+                {switchableActions.map((a) => (
+                  <button
+                    key={a.id}
+                    onClick={() => handleSwitchToAction(a)}
+                    className="w-full text-left p-2.5 rounded-lg hover:bg-surface-container-high transition-colors"
+                  >
+                    <p className="text-xs text-on-surface-variant">{a.taskTitle}</p>
+                    <p className="text-sm font-bold text-on-surface">{a.title}</p>
+                  </button>
+                ))}
+              </div>
+            )}
 
             {editing ? (
               <div className="space-y-3">
@@ -563,16 +559,6 @@ export default function TodayDashboard() {
               <h2 className="text-2xl font-bold text-on-surface leading-tight">{currentAction.title}</h2>
             )}
 
-            <p className="text-lg font-medium italic text-on-surface-variant">"{statusMessage}"</p>
-
-            {interruptionCount >= 2 && (
-              <div className="neumorphic-sunken rounded-lg p-3 flex flex-wrap items-center justify-between gap-2">
-                <p className="text-xs text-secondary font-bold">このMissionは何度か中断されています。分割してみませんか？</p>
-                <Link to="/plan?replan=1" className="text-xs font-bold text-secondary hover:underline">
-                  計画を見直す
-                </Link>
-              </div>
-            )}
 
             {!editing && isMissionOverdue && !notStartedStep && (
               <div className="neumorphic-sunken rounded-xl p-5 space-y-3">
@@ -600,7 +586,7 @@ export default function TodayDashboard() {
                     }}
                     className="btn-squish neumorphic-raised bg-surface text-on-surface-variant font-bold py-3 px-6 rounded-full"
                   >
-                    別のMissionにする
+                    別のFocusにする
                   </button>
                 </div>
               </div>
@@ -630,7 +616,7 @@ export default function TodayDashboard() {
                     onClick={handleConfirmNotStartedReason}
                     className="btn-squish neumorphic-raised bg-primary text-white px-6 py-2 rounded-full text-sm font-bold ml-auto"
                   >
-                    {notStartedPendingAction === 'reschedule' ? 'この予定にずらす' : '別のMissionにする'}
+                    {notStartedPendingAction === 'reschedule' ? 'この予定にずらす' : '別のFocusにする'}
                   </button>
                 </div>
               </div>
@@ -647,16 +633,21 @@ export default function TodayDashboard() {
                 <button onClick={() => setShowDetail((v) => !v)} className="text-sm font-bold text-primary hover:underline">
                   {showDetail ? '詳細を閉じる' : '詳細を見る'}
                 </button>
-                {dayPhase === 'mission_ready' && (
-                  <div className="flex gap-3 ml-auto">
-                    <button onClick={() => startEdit(currentAction)} className="text-sm font-bold text-on-surface-variant hover:text-primary">
-                      Edit
-                    </button>
-                    <button onClick={() => handleSkip(currentAction)} className="text-sm font-bold text-on-surface-variant hover:text-primary">
-                      Skip
-                    </button>
-                  </div>
-                )}
+                <div className="flex gap-3 ml-auto">
+                  <button onClick={() => handleCompleteAction(currentAction)} className="text-sm font-bold text-primary hover:underline">
+                    完了にする
+                  </button>
+                  {dayPhase === 'mission_ready' && (
+                    <>
+                      <button onClick={() => startEdit(currentAction)} className="text-sm font-bold text-on-surface-variant hover:text-primary">
+                        Edit
+                      </button>
+                      <button onClick={() => handleSkip(currentAction)} className="text-sm font-bold text-on-surface-variant hover:text-primary">
+                        Skip
+                      </button>
+                    </>
+                  )}
+                </div>
               </div>
             )}
 
@@ -669,7 +660,7 @@ export default function TodayDashboard() {
                 )}
                 <p>見積り時間: {currentAction.estimatedMinutes}分</p>
                 {currentAction.completionCriteria && <p>完了条件: {currentAction.completionCriteria}</p>}
-                <p className="text-xs text-outline">今日の予定表で次に来るミッションです。</p>
+                <p className="text-xs text-outline">今日の予定表で次に来るFocusです。</p>
               </div>
             )}
           </div>
@@ -681,7 +672,7 @@ export default function TodayDashboard() {
             className="flex items-center gap-2 text-sm font-bold text-primary hover:underline"
           >
             <span className="material-symbols-outlined text-lg">{showLog ? 'expand_less' : 'expand_more'}</span>
-            今日のミッションを見る
+            今日のFocusを見る
           </button>
         </div>
 
@@ -701,7 +692,7 @@ export default function TodayDashboard() {
                   </div>
                 ) : action ? (
                   <button
-                    onClick={() => user && completeAction(action.id, action.taskId, user.uid)}
+                    onClick={() => handleCompleteAction(action)}
                     title="完了にする"
                     className={`w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0 hover:bg-primary hover:text-white transition-colors ${
                       status === 'current' ? 'bg-primary/20 text-primary' : 'bg-surface-container text-outline'
