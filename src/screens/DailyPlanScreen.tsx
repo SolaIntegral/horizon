@@ -3,7 +3,7 @@ import { useNavigate, useSearchParams } from 'react-router-dom'
 import { Timestamp } from 'firebase/firestore'
 import { useAuth } from '../lib/AuthContext'
 import { subscribeScheduledTasks, type Task } from '../lib/tasks'
-import { subscribeActiveActions, setActionDeferredTo, type Action } from '../lib/actions'
+import { subscribeActiveActions, subscribeDoneActions, setActionDeferredTo, completeAction, type Action } from '../lib/actions'
 import { subscribeDailyPlan, upsertDailyPlan, type DailyPlan, type PlannedSlot, type TimeSlot } from '../lib/dailyPlans'
 import { buildDailySchedule, type CandidateAction, type FixedEvent } from '../lib/dailyPlanEngine'
 import { addDays, combineDateAndTime, formatDateKey, formatTime, timeToHHMM } from '../lib/dateUtils'
@@ -15,7 +15,7 @@ import MorningSetupForm from '../components/MorningSetupForm'
 type DayTab = 'today' | 'tomorrow' | 'plus2'
 type ReplanTarget = 'today' | 'tomorrow'
 
-const replanReasons = ['急な予定が入った', '体調・集中力が変わった', 'Missionを想定より大きかった', '優先度が変わった', '必要な情報が揃っていない', 'その他']
+const replanReasons = ['急な予定が入った', '体調・集中力が変わった', 'Focusを想定より大きかった', '優先度が変わった', '必要な情報が揃っていない', 'その他']
 
 interface TimelineBlock {
   key: string
@@ -23,23 +23,27 @@ interface TimelineBlock {
   end: Date
   kind: 'fixed' | 'action' | 'buffer'
   title: string
-  actionId?: string
+  action?: Action
   sourceIndex?: number // index into plan.plannedSlots, for 'action' blocks
 }
 
-function toTimelineBlocks(plan: DailyPlan, actionTitleOf: (id: string) => string): TimelineBlock[] {
+// actionsById must include done/skipped Actions too (not just active ones) —
+// otherwise a completed Action's slot can't be told apart from a genuinely
+// deleted one, and both render as "(削除されたAction)".
+function toTimelineBlocks(plan: DailyPlan, actionsById: Map<string, Action>): TimelineBlock[] {
   const blocks: TimelineBlock[] = []
   plan.calendarBusySlots.forEach((s, i) => {
     blocks.push({ key: `fixed-${i}`, start: s.start.toDate(), end: s.end.toDate(), kind: 'fixed', title: s.title || '固定予定' })
   })
   plan.plannedSlots.forEach((s, i) => {
+    const action = actionsById.get(s.actionId)
     blocks.push({
       key: `action-${i}`,
       start: s.start.toDate(),
       end: s.end.toDate(),
       kind: 'action',
-      title: actionTitleOf(s.actionId),
-      actionId: s.actionId,
+      title: action?.title ?? '(削除されたAction)',
+      action,
       sourceIndex: i,
     })
   })
@@ -60,6 +64,7 @@ export default function DailyPlanScreen() {
 
   const [scheduledTasks, setScheduledTasks] = useState<Task[]>([])
   const [activeActions, setActiveActions] = useState<Action[]>([])
+  const [doneActions, setDoneActions] = useState<Action[]>([])
   const [plan, setPlan] = useState<DailyPlan | null>(null)
   const [tomorrowPlan, setTomorrowPlan] = useState<DailyPlan | null>(null)
   const [weekdaySchedule, setWeekdaySchedule] = useState<WeekdayScheduleMap>(DEFAULT_WEEKDAY_SCHEDULE)
@@ -78,6 +83,7 @@ export default function DailyPlanScreen() {
     if (!user) return
     const unsub1 = subscribeScheduledTasks(user.uid, setScheduledTasks)
     const unsub2 = subscribeActiveActions(user.uid, setActiveActions)
+    const unsub2b = subscribeDoneActions(user.uid, setDoneActions)
     const unsub3 = subscribeDailyPlan(user.uid, todayKey, (p) => {
       setPlan(p)
       if (!p) setEditingSetup(true)
@@ -89,6 +95,7 @@ export default function DailyPlanScreen() {
     return () => {
       unsub1()
       unsub2()
+      unsub2b()
       unsub3()
       unsub4()
       unsub5()
@@ -108,6 +115,14 @@ export default function DailyPlanScreen() {
 
   const actionMap = useMemo(() => new Map(activeActions.map((a) => [a.id, a])), [activeActions])
   const actionTitleOf = (id: string) => actionMap.get(id)?.title ?? '(削除されたAction)'
+  // Timeline rendering needs done/skipped Actions too, so a completed slot
+  // can be told apart from a genuinely deleted one — scheduling logic above
+  // stays scoped to actionMap (active only), this is timeline-display-only.
+  const allActionsById = useMemo(() => {
+    const map = new Map<string, Action>(actionMap)
+    doneActions.forEach((a) => map.set(a.id, a))
+    return map
+  }, [actionMap, doneActions])
   const taskMap = useMemo(() => new Map(scheduledTasks.map((t) => [t.id, t])), [scheduledTasks])
 
   const closeReplan = () => {
@@ -194,6 +209,11 @@ export default function DailyPlanScreen() {
     await upsertDailyPlan(user.uid, todayKey, { plannedSlots: nextSlots })
   }
 
+  const handleCompleteBlockAction = (action: Action) => {
+    if (!user) return
+    completeAction(action.id, action.taskId, user.uid)
+  }
+
   const handleMoveToTomorrow = async (index: number) => {
     if (!user || !plan) return
     const block = plan.plannedSlots[index]
@@ -236,7 +256,7 @@ export default function DailyPlanScreen() {
     })
   }, [activeActions, taskMap, plus2Key])
 
-  const timelineBlocks = plan ? toTimelineBlocks(plan, actionTitleOf) : []
+  const timelineBlocks = plan ? toTimelineBlocks(plan, allActionsById) : []
 
   return (
     <div className="flex-grow p-6 lg:p-10 overflow-y-auto pb-32 md:pb-10">
@@ -244,7 +264,7 @@ export default function DailyPlanScreen() {
         <header className="flex justify-between items-center">
           <div>
             <div className="flex items-center gap-2">
-              <h2 className="text-4xl font-bold text-primary">Today's Plan</h2>
+              <h2 className="text-4xl font-bold text-primary">Schedule</h2>
               <HelpButton title="Planの使い方（1日の予定表）">
                 <p>1日の時間割を作る画面です。まず今の体調・睡眠時間、今日中に終わらせたいこと（必須目標）、今日進めるAction、固定予定（会議など）、終了予定時刻を入力します。</p>
                 <p>「必須」に指定したAction（最大2件）は午前中に優先配置されます。体調が「しんどい」場合は詰め込む量を自動的に減らし、空き時間の一部は必ず「バッファ」として空けておきます。</p>
@@ -382,21 +402,37 @@ export default function DailyPlanScreen() {
               {timelineBlocks.length === 0 && <p className="text-sm text-outline">予定はまだありません。</p>}
               {timelineBlocks.map((block) => {
                 const actionIndex = block.sourceIndex ?? -1
+                const isFinished = block.kind === 'action' && (block.action?.status === 'done' || block.action?.status === 'skipped')
                 return (
                   <div
                     key={block.key}
                     className={`flex items-center gap-4 p-4 rounded-lg ${
-                      block.kind === 'action' ? 'neumorphic-raised' : block.kind === 'fixed' ? 'neumorphic-sunken bg-surface-container-high' : 'border-2 border-dashed border-outline-variant/30'
+                      block.kind === 'action'
+                        ? isFinished
+                          ? 'neumorphic-sunken'
+                          : 'neumorphic-raised'
+                        : block.kind === 'fixed'
+                          ? 'neumorphic-sunken bg-surface-container-high'
+                          : 'border-2 border-dashed border-outline-variant/30'
                     }`}
                   >
                     <div className="text-xs font-bold text-on-surface-variant w-28 flex-shrink-0">
                       {formatTime(block.start)} – {formatTime(block.end)}
                     </div>
                     <div className="flex-1">
-                      <p className={`text-sm font-bold ${block.kind === 'buffer' ? 'text-outline' : 'text-on-surface'}`}>{block.title}</p>
+                      <p
+                        className={`text-sm font-bold ${
+                          block.kind === 'buffer' ? 'text-outline' : isFinished ? 'text-on-surface-variant line-through' : 'text-on-surface'
+                        }`}
+                      >
+                        {block.title}
+                      </p>
                       {block.kind === 'fixed' && <p className="text-[10px] text-outline uppercase font-bold">固定予定</p>}
+                      {isFinished && (
+                        <p className="text-[10px] text-outline uppercase font-bold">{block.action?.status === 'done' ? '完了' : 'スキップ'}</p>
+                      )}
                     </div>
-                    {block.kind === 'action' && actionIndex >= 0 && (
+                    {block.kind === 'action' && actionIndex >= 0 && !isFinished && (
                       <div className="flex items-center gap-2 flex-shrink-0">
                         <input
                           type="time"
@@ -410,6 +446,11 @@ export default function DailyPlanScreen() {
                         <button onClick={() => moveBlock(actionIndex, 1)} className="text-outline hover:text-primary">
                           <span className="material-symbols-outlined text-base">arrow_downward</span>
                         </button>
+                        {block.action && (
+                          <button onClick={() => handleCompleteBlockAction(block.action!)} className="text-xs font-bold text-primary hover:underline">
+                            完了にする
+                          </button>
+                        )}
                         <button onClick={() => handleMoveToTomorrow(actionIndex)} className="text-xs font-bold text-secondary hover:underline">
                           明日に回す
                         </button>
